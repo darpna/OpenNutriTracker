@@ -77,6 +77,10 @@ enum BulkAddPhotoError {
   /// The camera could not be opened, commonly because permission was denied.
   camera,
 
+  /// The gallery could not be opened, commonly because photo access was
+  /// denied.
+  gallery,
+
   /// The photo itself could not be encoded or was too large to send.
   unreadable,
 

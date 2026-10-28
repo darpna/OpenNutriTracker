@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:opennutritracker/core/utils/ai_credential_storage.dart';
 import 'package:opennutritracker/features/add_meal/domain/meal_photo_interpreter.dart';
 import 'package:opennutritracker/features/add_meal/util/photo_metadata.dart';
@@ -80,7 +81,7 @@ class MealPhotoEncoder {
     'gif': 'image/gif',
   };
 
-  /// Encodes the file at [sourcePath] and then deletes it.
+  /// Encodes the file at [sourcePath] and then deletes it, if it is ours.
   ///
   /// Use this for anything that came from the image picker. `image_picker`
   /// does not hand back the user's original: it copies the chosen photo into
@@ -91,21 +92,73 @@ class MealPhotoEncoder {
   /// That copy is what makes "the app keeps no photo" false, so the app
   /// removes it. The deletion runs even when encoding failed, because a photo
   /// the provider rejected is exactly as unwelcome on disk as one it read.
+  ///
+  /// The deletion only ever touches a file inside [cacheRoots] (default: the
+  /// app's temporary and cache directories). A picker that returned the
+  /// user's own gallery file instead of a copy must not cost them the photo,
+  /// so anything outside those directories is encoded and left alone.
   static Future<MealPhoto?> encodeAndDiscardSource(
     String sourcePath, {
     required MealPhotoFormat format,
+    Iterable<String>? cacheRoots,
   }) async {
     try {
       return await encode(sourcePath, format: format);
     } finally {
       try {
-        final file = File(sourcePath);
-        if (await file.exists()) await file.delete();
+        final roots = cacheRoots ?? await _appCacheRoots();
+        if (isInsideAny(sourcePath, roots)) {
+          final file = File(sourcePath);
+          if (await file.exists()) await file.delete();
+        }
       } catch (_) {
         // Best effort. A cache file we could not remove is not worth
         // failing the user's meal entry over, and the OS clears it later.
       }
     }
+  }
+
+  /// Whether [path] resolves to a location inside one of [roots].
+  ///
+  /// Both sides are resolved through symlinks first, so `..` segments and
+  /// links (`/tmp` on some platforms) cannot make an outside file look
+  /// inside. A path that cannot be resolved is not inside anything: when in
+  /// doubt the file stays.
+  @visibleForTesting
+  static bool isInsideAny(String path, Iterable<String> roots) {
+    final String resolved;
+    try {
+      resolved = File(path).resolveSymbolicLinksSync();
+    } catch (_) {
+      return false;
+    }
+    for (final root in roots) {
+      try {
+        var resolvedRoot = Directory(root).resolveSymbolicLinksSync();
+        if (!resolvedRoot.endsWith(Platform.pathSeparator)) {
+          resolvedRoot += Platform.pathSeparator;
+        }
+        if (resolved.startsWith(resolvedRoot)) return true;
+      } catch (_) {
+        continue;
+      }
+    }
+    return false;
+  }
+
+  /// Where `image_picker` writes its copies: the temporary directory on iOS,
+  /// the cache directory on Android (which is what `getTemporaryDirectory`
+  /// returns there). The application cache directory is included for
+  /// platforms where the two differ.
+  static Future<List<String>> _appCacheRoots() async {
+    final roots = <String>[(await getTemporaryDirectory()).path];
+    try {
+      roots.add((await getApplicationCacheDirectory()).path);
+    } catch (_) {
+      // Not available everywhere; the temporary directory already covers
+      // the picker.
+    }
+    return roots;
   }
 
   /// Encodes the file at [sourcePath], or null when it cannot produce

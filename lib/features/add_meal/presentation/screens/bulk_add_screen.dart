@@ -522,6 +522,8 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
           BulkAddPhotoError.transient => S.of(context).bulkAddPhotoFailedLabel,
           BulkAddPhotoError.camera =>
             S.of(context).bulkAddPhotoCameraFailedLabel,
+          BulkAddPhotoError.gallery =>
+            S.of(context).bulkAddPhotoGalleryFailedLabel,
           BulkAddPhotoError.unreadable =>
             S.of(context).bulkAddPhotoUnreadableLabel,
           BulkAddPhotoError.unsupported =>
@@ -555,6 +557,7 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
           ),
           BulkAddPhotoError.transient ||
           BulkAddPhotoError.camera ||
+          BulkAddPhotoError.gallery ||
           BulkAddPhotoError.unreadable ||
           BulkAddPhotoError.billing => null,
         },
@@ -1333,7 +1336,7 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
       AiProvider.ownServer =>
         S.of(context).bulkAddPhotoDisclosureOwnServer(destination.name),
     };
-    final shouldOpenCamera = await showModalBottomSheet<bool>(
+    final source = await showModalBottomSheet<ImageSource>(
       context: context,
       builder: (sheetContext) => SafeArea(
         child: Wrap(
@@ -1358,22 +1361,40 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
               child: ListTile(
                 leading: const Icon(Icons.photo_camera_rounded),
                 title: Text(S.of(sheetContext).mealImageTakePhoto),
-                onTap: () => Navigator.of(sheetContext).pop(true),
+                onTap: () => Navigator.of(sheetContext).pop(ImageSource.camera),
+              ),
+            ),
+            Semantics(
+              identifier: 'bulk-add-photo-gallery',
+              child: ListTile(
+                leading: const Icon(Icons.photo_library_rounded),
+                title: Text(S.of(sheetContext).mealImagePickFromGallery),
+                onTap: () =>
+                    Navigator.of(sheetContext).pop(ImageSource.gallery),
               ),
             ),
           ],
         ),
       ),
     );
-    if (shouldOpenCamera != true || !mounted) return;
+    if (source == null || !mounted) return;
 
     final XFile? picked;
     try {
-      picked = await ImagePicker().pickImage(source: ImageSource.camera);
+      picked = await ImagePicker().pickImage(source: source);
     } catch (e, stackTrace) {
-      _log.warning('Opening the meal photo camera failed', e, stackTrace);
+      _log.warning(
+        'Opening the meal photo ${source.name} failed',
+        e,
+        stackTrace,
+      );
       if (!mounted) return;
-      _bloc.add(const ReadMealPhotoFailedEvent(BulkAddPhotoError.camera));
+      _bloc.add(
+        ReadMealPhotoFailedEvent(switch (source) {
+          ImageSource.camera => BulkAddPhotoError.camera,
+          ImageSource.gallery => BulkAddPhotoError.gallery,
+        }),
+      );
       return;
     }
     // A cancelled picker is not a failure and says nothing to the user.
