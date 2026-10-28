@@ -274,23 +274,23 @@ jobs:
           path: smoke-*.log
           if-no-files-found: ignore
 
-  apk:
-    needs: [test, smoke]
+  # Builds in parallel with `smoke`: the ~10 min emulator run gates the
+  # release below, not the build. A failed smoke still leaves the APK as a
+  # workflow artifact, but nothing is published.
+  apk-build:
+    needs: test
     # PRs skip the build: no signing secrets and no release for unmerged code.
     # smoke_only lets a dispatch exercise the gate without cutting a release.
-    # !cancelled() is load-bearing: without a status function GitHub prepends an
-    # implicit success(), which fails when any job in the needs chain was
-    # skipped - and `changes` (via smoke) is always skipped on push.
+    # !cancelled() keeps the condition explicit rather than leaning on the
+    # implicit success() (the trap PR #5 fixed when `changes` sat in the chain).
     if: >-
       ${{ !cancelled()
       && needs.test.result == 'success'
-      && needs.smoke.result == 'success'
       && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
       && !inputs.smoke_only }}
     runs-on: ubuntu-latest
     permissions:
-      # Needed only by the release step (gh release create).
-      contents: write
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -395,17 +395,44 @@ jobs:
           path: dist/*.apk
           if-no-files-found: error
 
+  # Publishes only when smoke passed. The file is named at build time (the
+  # date is part of the name), so this job takes the name from the artifact.
+  apk-release:
+    needs: [apk-build, smoke]
+    # apk-build only succeeds on push/dispatch, so the event test is implied.
+    # !cancelled() for the same reason as above: `smoke` can sit behind a
+    # skipped `changes` job in the needs graph.
+    if: >-
+      ${{ !cancelled()
+      && needs.apk-build.result == 'success'
+      && needs.smoke.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      # gh release create / upload.
+      contents: write
+    steps:
+      - name: Download APK artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ont-darp-apk
+          path: dist
+
       # A release gives the phone a direct download link. --target pins the
       # tag to the built commit; a re-run of the same run_number reuses the
       # release and swaps its asset (old ones deleted first, since the name
       # carries a date and would not be overwritten) instead of failing on a
-      # duplicate tag.
+      # duplicate tag. No checkout, so gh needs the repo spelled out.
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: darp-b${{ github.run_number }}
         run: |
-          apk="dist/$APK_NAME"
+          shopt -s nullglob
+          files=(dist/*.apk)
+          [ "${#files[@]}" -eq 1 ] || { echo "::error::expected exactly one apk in dist/, found ${#files[@]}"; exit 1; }
+          apk="${files[0]}"
+          ls -l dist
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release view "$TAG" --json assets --jq '.assets[].name' |
               while read -r old; do gh release delete-asset "$TAG" "$old" --yes; done
