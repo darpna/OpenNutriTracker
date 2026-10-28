@@ -7,6 +7,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:meta/meta.dart';
 import 'package:opennutritracker/core/data/data_source/custom_meal_data_source.dart';
 import 'package:opennutritracker/core/data/dbo/favourite_meal_dbo.dart';
+import 'package:opennutritracker/features/custom_portion/domain/repository/custom_portion_repository.dart';
 import 'package:opennutritracker/core/data/dbo/intake_dbo.dart';
 import 'package:opennutritracker/core/data/dbo/meal_dbo.dart';
 import 'package:opennutritracker/core/data/dbo/recipe_dbo.dart';
@@ -32,6 +33,10 @@ import 'package:opennutritracker/features/settings/domain/tracked_day_boundary_r
 enum ExportFormat { json, csv }
 
 class ExportDataUsecase {
+  /// The archive entry holding the user's own servings ("1 bowl = 250 g"),
+  /// read back by [ImportDataUsecase]. Optional on import.
+  static const customPortionJsonFileName = 'user_custom_portions.json';
+
   final UserActivityRepository _userActivityRepository;
   final IntakeRepository _intakeRepository;
   final TrackedDayRepository _trackedDayRepository;
@@ -42,6 +47,9 @@ class ExportDataUsecase {
   final ConfigRepository _configRepository;
   final FavouriteMealRepository _favouriteMealRepository;
 
+  /// Null where a test does not export the user's own servings.
+  final CustomPortionRepository? _customPortionRepository;
+
   ExportDataUsecase(
     this._userActivityRepository,
     this._intakeRepository,
@@ -51,8 +59,9 @@ class ExportDataUsecase {
     this._weightLogRepository,
     this._customActivityTemplateRepository,
     this._configRepository,
-    this._favouriteMealRepository,
-  );
+    this._favouriteMealRepository, {
+    CustomPortionRepository? customPortionRepository,
+  }) : _customPortionRepository = customPortionRepository;
 
   /// Exports user activity, intake, tracked day, recipe, weight-log, Custom
   /// activity template and favourites data, plus the profile's goal
@@ -263,6 +272,25 @@ class ExportDataUsecase {
             favouriteBytes,
           ),
         );
+
+        // The servings the user named for their foods ("1 bowl = 250 g").
+        final portionRepository = _customPortionRepository;
+        if (portionRepository != null) {
+          final portionBytes = utf8.encode(
+            jsonEncode(
+              (await portionRepository.getAllDBOs())
+                  .map((portion) => portion.toJson())
+                  .toList(),
+            ),
+          );
+          archive.addFile(
+            ArchiveFile(
+              customPortionJsonFileName,
+              portionBytes.length,
+              portionBytes,
+            ),
+          );
+        }
 
         // Every user-attached photo, under its relative slug (e.g.
         // `recipe_images/<id>.webp`). The slug matches what we persist on
