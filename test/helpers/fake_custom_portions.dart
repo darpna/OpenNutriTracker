@@ -31,13 +31,23 @@ class FakeCustomPortions implements CustomPortionRepository {
     required double gramWeight,
     required String unit,
   }) async {
+    // Like the real repository: the same name on a food updates in place.
+    final existing = _rows.values
+        .where(
+          (r) =>
+              r.foodKey == foodKey &&
+              r.label.toLowerCase() == label.trim().toLowerCase(),
+        )
+        .firstOrNull;
     final row = CustomPortionDBO(
-      id: 'p${_next++}',
+      id: existing?.id ?? 'p${_next++}',
       foodKey: foodKey,
       label: label.trim(),
       gramWeight: gramWeight,
       unit: unit,
-      createdAt: DateTime(2026, 10, 1).add(Duration(minutes: _next)),
+      createdAt:
+          existing?.createdAt ??
+          DateTime(2026, 10, 1).add(Duration(minutes: _next)),
     );
     _rows[row.id] = row;
     return CustomPortionEntity.fromDBO(row);

@@ -321,6 +321,43 @@ void main() {
       expect(bloc.state.totalQuantityConverted, '25000.0');
     });
 
+    testWidgets('saving an identical serving selects the existing one', (
+      tester,
+    ) async {
+      await seedBowl();
+      await pumpMealDetail(tester, _plainFood());
+
+      Future<void> saveBowlAgain() async {
+        await openUnitPicker(tester);
+        await tester.tap(find.text(l10nEn.customPortionAddAction).last);
+        await tester.pumpAndSettle();
+        await addServingThroughDialog(tester);
+      }
+
+      // Twice, with the selection moved away in between: the second save
+      // leaves the stored list and the saved id exactly as the first did.
+      for (var i = 0; i < 2; i++) {
+        await tester.enterText(find.byType(TextFormField).first, '5');
+        await tester.pumpAndSettle();
+        bloc.add(
+          UpdateKcalEvent(
+            meal: _plainFood(),
+            totalQuantity: '5',
+            selectedUnit: 'g',
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(bloc.state.selectedUnit, 'g');
+
+        await saveBowlAgain();
+
+        expect(portions.rows, hasLength(1), reason: 'save #${i + 1}');
+        expect(bloc.state.selectedUnit, 'serving', reason: 'save #${i + 1}');
+        expect(quantityText(tester), '1', reason: 'save #${i + 1}');
+        expect(bloc.state.totalQuantityConverted, '250.0');
+      }
+    });
+
     testWidgets('another food does not get it', (tester) async {
       await seedBowl();
       await pumpMealDetail(tester, _foodWithServing());

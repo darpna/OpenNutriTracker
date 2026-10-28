@@ -174,6 +174,7 @@ class MealDetailBloc extends Bloc<MealDetailEvent, MealDetailState> {
           state.copyWith(
             customPortions: await get.getCustomPortions(event.meal),
             addedCustomPortionId: saved.id,
+            customPortionSaves: state.customPortionSaves + 1,
           ),
         );
       } catch (e, st) {

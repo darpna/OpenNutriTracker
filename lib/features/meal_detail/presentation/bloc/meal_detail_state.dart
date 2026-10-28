@@ -27,6 +27,10 @@ abstract class MealDetailState extends Equatable {
   /// the one the screen should select. Null otherwise.
   final String? addedCustomPortionId;
 
+  /// Counts saves, so saving a serving identical to one already stored (same
+  /// list, same id) is still a state change the screen can react to.
+  final int customPortionSaves;
+
   const MealDetailState({
     required this.totalQuantityConverted,
     this.totalKcal = 0,
@@ -40,6 +44,7 @@ abstract class MealDetailState extends Equatable {
     this.isHydrating = false,
     this.customPortions = const [],
     this.addedCustomPortionId,
+    this.customPortionSaves = 0,
   });
 
   @override
@@ -56,6 +61,7 @@ abstract class MealDetailState extends Equatable {
     isHydrating,
     customPortions,
     addedCustomPortionId,
+    customPortionSaves,
   ];
 
   MealDetailInitial copyWith({
@@ -72,6 +78,7 @@ abstract class MealDetailState extends Equatable {
     List<CustomPortionEntity>? customPortions,
     String? addedCustomPortionId,
     bool clearAddedCustomPortionId = false,
+    int? customPortionSaves,
   }) {
     return MealDetailInitial(
       totalQuantityConverted:
@@ -89,6 +96,7 @@ abstract class MealDetailState extends Equatable {
       addedCustomPortionId: clearAddedCustomPortionId
           ? null
           : addedCustomPortionId ?? this.addedCustomPortionId,
+      customPortionSaves: customPortionSaves ?? this.customPortionSaves,
     );
   }
 }
@@ -107,5 +115,6 @@ class MealDetailInitial extends MealDetailState {
     super.isHydrating,
     super.customPortions,
     super.addedCustomPortionId,
+    super.customPortionSaves,
   });
 }
