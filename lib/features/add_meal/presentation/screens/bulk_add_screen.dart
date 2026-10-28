@@ -8,6 +8,8 @@ import 'package:image_picker/image_picker.dart';
 import 'package:logging/logging.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:opennutritracker/core/domain/entity/intake_type_entity.dart';
+import 'package:opennutritracker/core/domain/entity/recipe_ingredient_entity.dart';
+import 'package:opennutritracker/core/utils/calc/unit_calc.dart';
 import 'package:opennutritracker/core/utils/ai_credential_storage.dart';
 import 'package:opennutritracker/features/add_meal/domain/usecase/run_ai_endpoint_probe_usecase.dart';
 import 'package:opennutritracker/core/utils/ai_model_catalogue.dart';
@@ -15,7 +17,10 @@ import 'package:opennutritracker/core/utils/energy_display.dart';
 import 'package:opennutritracker/core/utils/locator.dart';
 import 'package:opennutritracker/core/utils/navigation_options.dart';
 import 'package:opennutritracker/features/add_meal/domain/entity/meal_portion_entity.dart';
+import 'package:opennutritracker/features/add_meal/domain/meal_items_api.dart'
+    show mealPhotoCaptionMaxChars;
 import 'package:opennutritracker/features/add_meal/domain/meal_photo_interpreter.dart';
+import 'package:opennutritracker/features/add_meal/domain/usecase/save_photo_dish_usecase.dart';
 import 'package:opennutritracker/features/add_meal/domain/usecase/read_meal_text_usecase.dart';
 import 'package:opennutritracker/features/add_meal/presentation/bloc/bulk_add_bloc.dart';
 import 'package:opennutritracker/features/add_meal/util/meal_photo_encoder.dart';
@@ -606,18 +611,29 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
 
     // The list is the labelled surface, not each child — row identifiers
     // would churn every time the row count changes.
+    final dish = state.dish;
+    final entries = <Widget>[
+      // One row for the dish, then its components when it is open. The
+      // components are the leading rows, so they keep their indexes.
+      if (dish != null) _buildDishRow(context, state, dish),
+      if (dish != null && dish.expanded)
+        for (var i = 0; i < dish.componentCount; i++)
+          Padding(
+            padding: const EdgeInsetsDirectional.only(start: 16),
+            child: _buildRow(context, state, i),
+          ),
+      for (var i = dish?.componentCount ?? 0; i < state.rows.length; i++)
+        _buildRow(context, state, i),
+      if (state.parseErrors.isNotEmpty)
+        _buildParseErrors(context, state.parseErrors),
+    ];
     final list = Semantics(
       identifier: 'bulk-add-row-list',
       child: ListView.separated(
         padding: const EdgeInsets.symmetric(vertical: 8),
-        itemCount: state.rows.length + (state.parseErrors.isEmpty ? 0 : 1),
+        itemCount: entries.length,
         separatorBuilder: (_, _) => const Divider(height: 1),
-        itemBuilder: (context, index) {
-          if (index == state.rows.length) {
-            return _buildParseErrors(context, state.parseErrors);
-          }
-          return _buildRow(context, state, index);
-        },
+        itemBuilder: (context, index) => entries[index],
       ),
     );
 
@@ -970,6 +986,22 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
                         color: theme.colorScheme.error,
                       ),
                     )
+                  // The numbers are the model's own guess, not a database's:
+                  // said first and in the accent colour, with the amount's own
+                  // "estimated" beside it when that is a guess too.
+                  else if (row.usesAiEstimate)
+                    Wrap(
+                      spacing: 8,
+                      children: [
+                        Text(
+                          S.of(context).bulkAddAiEstimateLabel,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.tertiary,
+                          ),
+                        ),
+                        if (row.isEstimated) _estimatedLabel(context),
+                      ],
+                    )
                   else if (row.isLowConfidence)
                     Text(
                       S.of(context).bulkAddUncertainLabel,
@@ -987,6 +1019,10 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
                         color: theme.colorScheme.tertiary,
                       ),
                     )
+                  // The amount was read off a photograph: a guess the user can
+                  // see and edit, so it says so instead of "not stated".
+                  else if (row.isEstimated)
+                    _estimatedLabel(context)
                   // Last, and the quietest of the four. The others say
                   // something is probably wrong; this only says the number
                   // is the app's rather than the user's, so it takes the
@@ -1026,6 +1062,112 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
               ],
             );
           },
+        ),
+      ),
+    );
+  }
+
+  Widget _estimatedLabel(BuildContext context) => Text(
+    S.of(context).bulkAddEstimatedLabel,
+    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+      color: Theme.of(context).colorScheme.onSurfaceVariant,
+    ),
+  );
+
+  /// The single row a composed dish takes on the review screen: its name, the
+  /// total weight and energy of the components that will be logged, and a
+  /// chevron that opens them. The numbers are sums over the components below,
+  /// so editing one there moves them here.
+  Widget _buildDishRow(
+    BuildContext context,
+    BulkAddLoadedState state,
+    BulkAddDish dish,
+  ) {
+    final s = S.of(context);
+    final theme = Theme.of(context);
+    final loggable = state.dishRows.any((row) => row.willBeLogged);
+    final anyEstimated = state.dishRows.any((row) => row.isEstimated);
+    final grams = state.dishWeightG;
+    final kcal = state.dishKcal;
+    final weight = state.usesImperialUnits
+        ? '${UnitCalc.gToOz(grams).round()} ${s.ozUnit}'
+        : '${grams.round()} ${s.gramUnit}';
+    final skipLabel = state.dishRows.any((row) => !row.skipped)
+        ? s.bulkAddSkipLabel
+        : s.bulkAddIncludeLabel;
+
+    return Opacity(
+      opacity: loggable ? 1.0 : 0.5,
+      child: Semantics(
+        identifier: 'bulk-add-dish-row',
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              InkWell(
+                onTap: () => _bloc.add(const ToggleDishExpandedEvent()),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          AutoSizeText(
+                            dish.name,
+                            maxLines: 1,
+                            minFontSize: 12,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.titleSmall,
+                          ),
+                          Wrap(
+                            spacing: 8,
+                            children: [
+                              if (anyEstimated) _estimatedLabel(context),
+                              Text(
+                                s.bulkAddDishComponentsLabel(
+                                  dish.componentCount,
+                                ),
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  color: theme.colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        if (kcal != null)
+                          Text(
+                            EnergyDisplay.formatWithUnit(context, kcal),
+                            style: theme.textTheme.titleSmall,
+                          ),
+                        Text(weight, style: theme.textTheme.bodySmall),
+                      ],
+                    ),
+                    Icon(
+                      dish.expanded
+                          ? Icons.expand_less_rounded
+                          : Icons.expand_more_rounded,
+                      semanticLabel: dish.expanded
+                          ? s.bulkAddDishCollapseLabel
+                          : s.bulkAddDishExpandLabel,
+                    ),
+                  ],
+                ),
+              ),
+              Align(
+                alignment: AlignmentDirectional.centerEnd,
+                child: TextButton(
+                  onPressed: () => _bloc.add(const ToggleDishSkippedEvent()),
+                  child: Text(skipLabel),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -1465,47 +1607,16 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
       AiProvider.ownServer =>
         S.of(context).bulkAddPhotoDisclosureOwnServer(destination.name),
     };
-    final source = await showModalBottomSheet<ImageSource>(
+    // Typed before the picture is chosen, so the same field serves the camera
+    // and the gallery. It lives in the sheet and comes back with the choice;
+    // it is never kept, and it travels only with the photo it was typed for.
+    final choice = await showModalBottomSheet<_PhotoChoice>(
       context: context,
-      builder: (sheetContext) => SafeArea(
-        child: Wrap(
-          children: [
-            // The disclosure sits here rather than in a dialog the user has
-            // to dismiss: this is the moment a photograph would leave the
-            // device, and it is the last moment they can decline.
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Text(
-                '$disclosure '
-                '${S.of(sheetContext).bulkAddPhotoDisclosureCommon}\n\n'
-                // The photo path has no deterministic fallback, so this is
-                // the only surface besides Settings where a user opts into a
-                // model. The stability note belongs on both.
-                '${S.of(sheetContext).aiAssistExperimentalNote}',
-                style: Theme.of(sheetContext).textTheme.bodySmall,
-              ),
-            ),
-            Semantics(
-              identifier: 'bulk-add-photo-camera',
-              child: ListTile(
-                leading: const Icon(Icons.photo_camera_rounded),
-                title: Text(S.of(sheetContext).mealImageTakePhoto),
-                onTap: () => Navigator.of(sheetContext).pop(ImageSource.camera),
-              ),
-            ),
-            Semantics(
-              identifier: 'bulk-add-photo-gallery',
-              child: ListTile(
-                leading: const Icon(Icons.photo_library_rounded),
-                title: Text(S.of(sheetContext).mealImagePickFromGallery),
-                onTap: () =>
-                    Navigator.of(sheetContext).pop(ImageSource.gallery),
-              ),
-            ),
-          ],
-        ),
-      ),
+      isScrollControlled: true,
+      builder: (sheetContext) => _PhotoSourceSheet(disclosure: disclosure),
     );
+    final source = choice?.source;
+    final captionText = choice?.caption ?? '';
     if (source == null || !mounted) return;
 
     final XFile? picked;
@@ -1563,6 +1674,7 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
         photo: photo,
         usesImperialUnits: _args.usesImperialUnits,
         localeCode: Localizations.localeOf(context).languageCode,
+        caption: captionText.isEmpty ? null : captionText,
       ),
     );
   }
@@ -1627,6 +1739,40 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
     );
   }
 
+  /// Logs the dish as one recipe, and remembers it as one.
+  ///
+  /// Every component is stored in grams (the amount the plate was confirmed
+  /// at), so the recipe re-reads the same weights if it is edited later. The
+  /// recipe is saved first and the diary entry is made *from* it, so the entry
+  /// and the saved food are the same thing; a same-named photo dish updates its
+  /// recipe in place (see [SavePhotoDishUseCase]).
+  Future<void> _logDish(
+    BulkAddDish dish,
+    List<({int index, BulkAddRow row, double amount})> components,
+  ) async {
+    final recipe = await locator<SavePhotoDishUseCase>().save(
+      name: dish.name,
+      ingredients: [
+        for (final component in components)
+          RecipeIngredientEntity(
+            snapshotMeal: component.row.meal!,
+            amount: component.amount,
+            unit: 'g',
+            convertedAmountG: component.amount,
+          ),
+      ],
+    );
+    if (!mounted) return;
+    await locator<MealDetailBloc>().addIntake(
+      context,
+      'g',
+      recipe.totalWeightG.toString(),
+      _args.intakeTypeEntity,
+      recipe.toMealEntity(),
+      _args.day,
+    );
+  }
+
   /// Validate the whole batch, then write it.
   ///
   /// `MealDetailBloc.addIntake` calls `double.parse` with no guard, so a
@@ -1648,7 +1794,7 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
     // are marked on the rows themselves and a filtered iterable cannot say
     // which row it came from.
     final invalid = <int, BulkAddQuantityError>{};
-    final writes = <({BulkAddRow row, double amount})>[];
+    final writes = <({int index, BulkAddRow row, double amount})>[];
     for (var index = 0; index < state.rows.length; index++) {
       final row = state.rows[index];
       if (!row.willBeLogged) continue;
@@ -1665,6 +1811,7 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
       // values are per gram/millilitre, so oz / fl.oz / serving have to be
       // converted first. Logging the raw amount stores 4 g for 4 oz.
       writes.add((
+        index: index,
         row: row,
         amount: convertQuantityToBaseUnit(
           quantity,
@@ -1716,7 +1863,20 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
       // Sequential, not concurrent. The tracked-day totals are accumulated
       // with a read-modify-write, so overlapping writes lose updates and
       // the day silently under-counts.
+      //
+      // The dish first: its components are the leading rows, and the diary
+      // reads in the order the screen did.
+      final dish = state.dish;
+      final dishWrites = [
+        for (final write in writes)
+          if (dish != null && write.index < dish.componentCount) write,
+      ];
+      if (dish != null && dishWrites.isNotEmpty) {
+        await _logDish(dish, dishWrites);
+        if (!mounted) return;
+      }
       for (final write in writes) {
+        if (dish != null && write.index < dish.componentCount) continue;
         await mealDetailBloc.addIntake(
           context,
           // The suffix is a display device; the stored vocabulary stays
@@ -1751,5 +1911,110 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
     Navigator.of(
       context,
     ).popUntil(ModalRoute.withName(NavigationOptions.mainRoute));
+  }
+}
+
+/// What the photo sheet hands back: where the picture comes from, and what the
+/// user said about it (empty when nothing).
+class _PhotoChoice {
+  final ImageSource source;
+  final String caption;
+
+  const _PhotoChoice(this.source, this.caption);
+}
+
+/// The sheet shown before a photograph is chosen: the disclosure, an optional
+/// caption, and the two sources. A widget of its own so the caption's
+/// controller is disposed with the sheet, after its exit animation, rather
+/// than while the field is still on screen.
+class _PhotoSourceSheet extends StatefulWidget {
+  final String disclosure;
+
+  const _PhotoSourceSheet({required this.disclosure});
+
+  @override
+  State<_PhotoSourceSheet> createState() => _PhotoSourceSheetState();
+}
+
+class _PhotoSourceSheetState extends State<_PhotoSourceSheet> {
+  final _caption = TextEditingController();
+
+  @override
+  void dispose() {
+    _caption.dispose();
+    super.dispose();
+  }
+
+  void _choose(ImageSource source) =>
+      Navigator.of(context).pop(_PhotoChoice(source, _caption.text.trim()));
+
+  @override
+  Widget build(BuildContext context) {
+    final s = S.of(context);
+    return SingleChildScrollView(
+      child: Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+        child: SafeArea(
+          child: Wrap(
+            children: [
+              // The disclosure sits here rather than in a dialog the user has
+              // to dismiss: this is the moment a photograph would leave the
+              // device, and it is the last moment they can decline.
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                child: Text(
+                  '${widget.disclosure} '
+                  '${s.bulkAddPhotoDisclosureCommon}\n\n'
+                  // The photo path has no deterministic fallback, so this is
+                  // the only surface besides Settings where a user opts into a
+                  // model. The stability note belongs on both.
+                  '${s.aiAssistExperimentalNote}',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Semantics(
+                  identifier: 'bulk-add-photo-caption',
+                  child: TextField(
+                    controller: _caption,
+                    minLines: 1,
+                    maxLines: 3,
+                    textInputAction: TextInputAction.done,
+                    inputFormatters: [
+                      LengthLimitingTextInputFormatter(
+                        mealPhotoCaptionMaxChars,
+                      ),
+                    ],
+                    decoration: InputDecoration(
+                      hintText: s.bulkAddPhotoCaptionHint,
+                      helperText: s.bulkAddPhotoCaptionDisclosure,
+                      helperMaxLines: 2,
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+              ),
+              Semantics(
+                identifier: 'bulk-add-photo-camera',
+                child: ListTile(
+                  leading: const Icon(Icons.photo_camera_rounded),
+                  title: Text(s.mealImageTakePhoto),
+                  onTap: () => _choose(ImageSource.camera),
+                ),
+              ),
+              Semantics(
+                identifier: 'bulk-add-photo-gallery',
+                child: ListTile(
+                  leading: const Icon(Icons.photo_library_rounded),
+                  title: Text(s.mealImagePickFromGallery),
+                  onTap: () => _choose(ImageSource.gallery),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }

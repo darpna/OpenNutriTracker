@@ -16,7 +16,14 @@ import 'package:opennutritracker/features/add_meal/domain/meal_text_interpreter.
 import 'package:opennutritracker/features/add_meal/domain/usecase/read_meal_text_usecase.dart';
 import 'package:get_it/get_it.dart';
 import 'package:provider/provider.dart';
+import 'package:opennutritracker/core/data/dbo/recipe_dbo.dart';
+import 'package:opennutritracker/core/data/repository/recipe_repository.dart';
 import 'package:opennutritracker/core/domain/entity/intake_type_entity.dart';
+import 'package:opennutritracker/core/domain/entity/recipe_entity.dart';
+import 'package:opennutritracker/core/domain/usecase/compute_recipe_nutrition_usecase.dart';
+import 'package:opennutritracker/core/domain/usecase/save_recipe_usecase.dart';
+import 'package:opennutritracker/features/add_meal/domain/ai_per100_estimate.dart';
+import 'package:opennutritracker/features/add_meal/domain/usecase/save_photo_dish_usecase.dart';
 import 'package:opennutritracker/core/utils/energy_unit_provider.dart';
 import 'package:opennutritracker/core/utils/navigation_options.dart';
 import 'package:opennutritracker/features/add_meal/domain/entity/meal_entity.dart';
@@ -1355,6 +1362,219 @@ void main() {
     expect(find.text(l10nEn.bulkAddPhotoGalleryFailedLabel), findsNothing);
     expect(find.text(l10nEn.bulkAddPhotoUnreadableLabel), findsNothing);
   });
+
+  group('a photo read as a dish', () {
+    const macros = AiPer100Estimate(
+      kcal: 250,
+      proteinG: 12,
+      carbsG: 20,
+      fatG: 13,
+    );
+    ParsedMealItem part(String query, double grams) => ParsedMealItem(
+      query: query,
+      quantity: grams,
+      unit: 'g',
+      estimated: true,
+      estimatedGrams: grams,
+      aiPer100: macros,
+    );
+    final dishReading = MealTextParseResult(
+      items: const [],
+      errors: const [],
+      dish: ParsedMealDish(
+        name: 'Katsu chicken wrap',
+        components: [
+          part('flour tortilla', 70),
+          part('breaded fried chicken', 120),
+          part('lettuce', 20),
+        ],
+      ),
+    );
+
+    Future<(BulkAddBloc, _MemoryRecipes)> showDish(
+      WidgetTester tester,
+      MealTextParseResult reading,
+    ) async {
+      // Tall, so every row is built: the list is lazy and the default surface
+      // shows two.
+      tester.view.physicalSize = const Size(900, 3200);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      final bloc = await _registerWithPhotoReading(MealPhotoRead(reading));
+      final recipes = _MemoryRecipes();
+      final compute = ComputeRecipeNutritionUseCase();
+      getIt.registerLazySingleton<SavePhotoDishUseCase>(
+        () => SavePhotoDishUseCase(
+          recipes,
+          SaveRecipeUseCase(recipes, compute),
+          compute,
+        ),
+      );
+      await tester.pumpWidget(_app());
+      tester.state<NavigatorState>(find.byType(Navigator)).pushNamed('/bulk');
+      await tester.pumpAndSettle();
+      bloc.add(
+        ReadMealPhotoEvent(
+          photo: MealPhoto(
+            bytes: Uint8List.fromList([1, 2, 3]),
+            mediaType: 'image/webp',
+          ),
+          usesImperialUnits: false,
+        ),
+      );
+      await tester.pumpAndSettle();
+      return (bloc, recipes);
+    }
+
+    testWidgets('is one row that opens onto its components', (tester) async {
+      await showDish(tester, dishReading);
+      final l10n = await S.delegate.load(const Locale('en'));
+
+      // Closed: the dish and nothing under it.
+      expect(find.text('Katsu chicken wrap'), findsOneWidget);
+      expect(find.text(l10n.bulkAddDishComponentsLabel(3)), findsOneWidget);
+      expect(find.text('Flour tortilla'), findsNothing);
+      expect(find.text(l10n.bulkAddSubmitLabel(1)), findsOneWidget);
+
+      await tester.tap(find.text('Katsu chicken wrap'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Flour tortilla'), findsOneWidget);
+      expect(find.text('Breaded fried chicken'), findsOneWidget);
+      expect(find.text('Lettuce'), findsOneWidget);
+      // Still one item to log, however many parts are showing.
+      expect(find.text(l10n.bulkAddSubmitLabel(1)), findsOneWidget);
+    });
+
+    testWidgets('says "estimated" and "AI estimate" instead of "not stated"', (
+      tester,
+    ) async {
+      await showDish(tester, dishReading);
+      final l10n = await S.delegate.load(const Locale('en'));
+
+      await tester.tap(find.text('Katsu chicken wrap'));
+      await tester.pumpAndSettle();
+
+      // Three parts, each a model's guess at both food and amount, plus the
+      // dish row's own marker.
+      expect(find.text(l10n.bulkAddAiEstimateLabel), findsNWidgets(3));
+      expect(find.text(l10n.bulkAddEstimatedLabel), findsNWidgets(4));
+      expect(find.text(l10n.bulkAddDefaultAmountLabel), findsNothing);
+      // Pre-filled, and editable.
+      final amounts = tester
+          .widgetList<TextField>(find.byType(TextField))
+          .map((field) => field.controller?.text)
+          .toList();
+      expect(amounts, containsAll(['70', '120', '20']));
+    });
+
+    testWidgets('a part the user edits stops being "estimated"', (
+      tester,
+    ) async {
+      await showDish(tester, dishReading);
+      final l10n = await S.delegate.load(const Locale('en'));
+      await tester.tap(find.text('Katsu chicken wrap'));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.widgetWithText(TextField, '120'), '150');
+      await tester.pumpAndSettle();
+
+      expect(find.text(l10n.bulkAddEstimatedLabel), findsNWidgets(3));
+      expect(find.text(l10n.bulkAddAiEstimateLabel), findsNWidgets(3));
+    });
+
+    testWidgets('is logged as one recipe, and remembered', (tester) async {
+      final (_, recipes) = await showDish(tester, dishReading);
+      final l10n = await S.delegate.load(const Locale('en'));
+
+      await tester.tap(find.text(l10n.bulkAddSubmitLabel(1)));
+      await tester.pumpAndSettle();
+
+      expect(_mealDetailBloc.writes, hasLength(1));
+      final write = _mealDetailBloc.writes.single;
+      expect(write.mealName, 'Katsu chicken wrap');
+      expect(write.unit, 'g');
+      expect(double.parse(write.amount), 210);
+
+      expect(recipes.saved, hasLength(1));
+      final recipe = recipes.saved.values.single;
+      expect(recipe.name, 'Katsu chicken wrap');
+      expect(recipe.ingredients, hasLength(3));
+      expect(recipe.totalWeightG, 210);
+    });
+
+    testWidgets('skipping the dish logs nothing of it', (tester) async {
+      final (_, recipes) = await showDish(tester, dishReading);
+      final l10n = await S.delegate.load(const Locale('en'));
+
+      await tester.tap(find.text(l10n.bulkAddSkipLabel));
+      await tester.pumpAndSettle();
+
+      expect(find.text(l10n.bulkAddSubmitLabel(0)), findsOneWidget);
+      expect(_mealDetailBloc.writes, isEmpty);
+      expect(recipes.saved, isEmpty);
+    });
+  });
+
+  testWidgets('the photo sheet has a caption field for camera and gallery', (
+    tester,
+  ) async {
+    // One field above both choices, so a caption typed before choosing
+    // applies to whichever source is picked.
+    final sources = <int>[];
+    const channel = MethodChannel('plugins.flutter.io/image_picker');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          if (call.method == 'pickImage') {
+            sources.add((call.arguments as Map)['source'] as int);
+          }
+          return null;
+        });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null),
+    );
+
+    await _register(const {});
+    getIt.unregister<AiCredentialStorage>();
+    getIt.registerLazySingleton<AiCredentialStorage>(
+      () => AiCredentialStorage(
+        _MapStorage({
+          'AiApiKeyTag.openrouter': 'sk-or-test',
+          'AiAssistEnabledTag': 'true',
+          'AiProviderTag': 'openrouter',
+        }),
+      ),
+    );
+
+    await tester.pumpWidget(_app());
+    await tester.pumpAndSettle();
+    tester.state<NavigatorState>(find.byType(Navigator)).pushNamed('/bulk');
+    await tester.pumpAndSettle();
+
+    for (final choice in [
+      l10nEn.mealImageTakePhoto,
+      l10nEn.mealImagePickFromGallery,
+    ]) {
+      await tester.tap(find.byIcon(Icons.photo_camera_rounded).first);
+      await tester.pumpAndSettle();
+
+      final caption = find.descendant(
+        of: find.byType(BottomSheet),
+        matching: find.byType(TextField),
+      );
+      expect(caption, findsOneWidget);
+      expect(find.text(l10nEn.bulkAddPhotoCaptionHint), findsOneWidget);
+      expect(find.text(l10nEn.bulkAddPhotoCaptionDisclosure), findsOneWidget);
+
+      await tester.enterText(caption, 'katsu chicken wrap from a cafe');
+      await tester.tap(find.text(choice));
+      await tester.pumpAndSettle();
+    }
+
+    expect(sources, [ImageSource.camera.index, ImageSource.gallery.index]);
+  });
+
 
   testWidgets('a photo with no food says so, not "nothing to log yet"', (
     tester,
@@ -2755,6 +2975,7 @@ class _StubPhotoReader implements ReadMealPhotoUseCase {
   Future<MealPhotoReadResult> read(
     MealPhoto photo, {
     String? localeCode,
+    String? caption,
   }) async => reading;
 
   @override
@@ -2777,4 +2998,28 @@ class _EmptyStorage implements FlutterSecureStorage {
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _MemoryRecipes implements RecipeRepository {
+  final saved = <String, RecipeEntity>{};
+
+  @override
+  Future<void> saveRecipe(RecipeEntity recipe) async =>
+      saved[recipe.id] = recipe;
+
+  @override
+  List<RecipeEntity> getAllRecipes() => saved.values.toList();
+
+  @override
+  RecipeEntity? getRecipeById(String id) => saved[id];
+
+  @override
+  Future<void> deleteRecipe(String id) async => saved.remove(id);
+
+  @override
+  List<RecipeDBO> getAllRecipesDBO() => throw UnimplementedError();
+
+  @override
+  Future<void> addAllRecipeDBOs(List<RecipeDBO> recipes) =>
+      throw UnimplementedError();
 }

@@ -148,6 +148,10 @@ class _AiAssistDialogState extends State<AiAssistDialog> {
   bool _configured = false;
 
   bool _enabled = false;
+
+  /// Whether a photo's per-100 g macros may stand in for a food the database
+  /// cannot match. Device-wide, like the switch above it.
+  bool _estimateFallback = true;
   AiModel? _model = AiModelCatalogue.defaultFor(AiProvider.anthropic);
 
   /// Set when OK was pressed on something that cannot be stored, and cleared
@@ -346,6 +350,7 @@ class _AiAssistDialogState extends State<AiAssistDialog> {
     // yet" over a request that is in flight, and offer a button that joins it
     // and looks like it did nothing.
     final running = widget.probeRunner?.current(provider);
+    final estimateFallback = await widget.storage.isEstimateFallbackEnabled();
     // A newer read has started since this one did, and it is reading the
     // provider the user actually chose. Dropping this snapshot loses nothing:
     // the newer one writes every field this one would have.
@@ -355,6 +360,7 @@ class _AiAssistDialogState extends State<AiAssistDialog> {
       _hasKey = hasKey;
       _configured = summary.provider == null ? false : summary.configured;
       _enabled = summary.enabled;
+      _estimateFallback = estimateFallback;
       _model = AiModelCatalogue.resolve(provider, modelId);
       _endpointController.text = summary.endpoint ?? '';
       _modelController.text = modelId ?? '';
@@ -856,6 +862,11 @@ class _AiAssistDialogState extends State<AiAssistDialog> {
     });
   }
 
+  Future<void> _setEstimateFallback(bool value) async {
+    setState(() => _estimateFallback = value);
+    await widget.storage.setEstimateFallbackEnabled(value);
+  }
+
   /// Whether every request to [resolved] will be refused before it leaves the
   /// phone, and the user can be told that now rather than after saving.
   ///
@@ -1086,6 +1097,19 @@ class _AiAssistDialogState extends State<AiAssistDialog> {
                           title: Text(s.settingsAiAssistEnabledLabel),
                           value: _enabled,
                           onChanged: _setEnabled,
+                        ),
+                      ),
+                      Semantics(
+                        identifier: 'ai-assist-estimate-fallback',
+                        // A checkbox, not a second switch: this is an option of
+                        // the feature, and the one switch above is its on/off.
+                        child: CheckboxListTile(
+                          contentPadding: EdgeInsets.zero,
+                          controlAffinity: ListTileControlAffinity.leading,
+                          title: Text(s.aiAssistEstimateFallbackTitle),
+                          subtitle: Text(s.aiAssistEstimateFallbackSubtitle),
+                          value: _estimateFallback,
+                          onChanged: (value) => _setEstimateFallback(value ?? true),
                         ),
                       ),
                       Semantics(
