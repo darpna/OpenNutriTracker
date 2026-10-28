@@ -125,6 +125,7 @@ void main() {
         await MealPhotoEncoder.encodeAndDiscardSource(
           file.path,
           format: format,
+          cacheRoots: [dir.path],
         );
 
         expect(file.existsSync(), isFalse, reason: format.name);
@@ -201,11 +202,53 @@ void main() {
       );
     });
 
+    test('keeps a source outside the cache directories', () async {
+      // `image_picker` should hand back a cache copy, but the guard is what
+      // stands between a surprising picker and the user's own gallery file.
+      final cache = await Directory('${dir.path}/cache').create();
+      final gallery = await Directory('${dir.path}/DCIM').create();
+      final copy = File('${cache.path}/scaled_1.jpg')
+        ..writeAsBytesSync(List.filled(2000, 0));
+      final original = File('${gallery.path}/IMG_0001.jpg')
+        ..writeAsBytesSync(List.filled(2000, 0));
+
+      for (final file in [copy, original]) {
+        await MealPhotoEncoder.encodeAndDiscardSource(
+          file.path,
+          format: MealPhotoFormat.jpeg,
+          cacheRoots: [cache.path],
+        );
+      }
+
+      expect(copy.existsSync(), isFalse);
+      expect(original.existsSync(), isTrue);
+    });
+
+    test('a path that climbs out of the cache does not count as inside', () {
+      final cache = Directory('${dir.path}/cache')..createSync();
+      final outside = File('${dir.path}/IMG_0002.jpg')
+        ..writeAsBytesSync(List.filled(10, 0));
+
+      expect(
+        MealPhotoEncoder.isInsideAny('${cache.path}/../IMG_0002.jpg', [
+          cache.path,
+        ]),
+        isFalse,
+      );
+      expect(MealPhotoEncoder.isInsideAny(outside.path, [dir.path]), isTrue);
+      // A sibling that merely shares the prefix is not inside either.
+      expect(
+        MealPhotoEncoder.isInsideAny(outside.path, ['${dir.path}/IMG_000']),
+        isFalse,
+      );
+    });
+
     test('a missing source is not an error', () async {
       await expectLater(
         MealPhotoEncoder.encodeAndDiscardSource(
           '${dir.path}/gone.jpg',
           format: MealPhotoFormat.jpeg,
+          cacheRoots: [dir.path],
         ),
         completion(isNull),
       );
