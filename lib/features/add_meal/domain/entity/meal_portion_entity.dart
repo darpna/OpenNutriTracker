@@ -12,15 +12,18 @@ import 'package:equatable/equatable.dart';
 /// reader is the defect #966 gated against, so the answer travels beside the
 /// text rather than being inferred from it.
 ///
-/// Not persisted. A meal read back from the database has no portions, which
-/// is the honest answer: nothing stores them, and the amount was converted to
-/// grams before it was written.
+/// Not persisted with the meal. A meal read back from the database has no
+/// portions, which is the honest answer: nothing stores them, and the amount
+/// was converted to grams before it was written. The servings the user
+/// defined themselves are kept apart (see [customPortionId]) and added to a
+/// food's list each time it is opened.
 class MealPortionEntity extends Equatable {
   const MealPortionEntity({
     required this.label,
     required this.gramWeight,
     required this.localized,
     this.englishLabel,
+    this.customPortionId,
   });
 
   /// As published, count and all — "1 cup", "1 Tasse", "1 cup, cooked".
@@ -48,6 +51,19 @@ class MealPortionEntity extends Equatable {
   /// True when [label] came from a translation a human verified.
   final bool localized;
 
+  /// The id of the serving the user defined, or null for one the database
+  /// carries. Only a custom serving can be deleted.
+  final String? customPortionId;
+
+  /// True for a serving the user added themselves.
+  bool get isCustom => customPortionId != null;
+
   @override
-  List<Object?> get props => [label, gramWeight, localized, englishLabel];
+  List<Object?> get props => [
+    label,
+    gramWeight,
+    localized,
+    englishLabel,
+    customPortionId,
+  ];
 }

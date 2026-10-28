@@ -298,6 +298,39 @@ class MealEntity extends Equatable {
     detailed: detailed,
   );
 
+  /// The same meal with the servings the user defined for it added after the
+  /// portions it already has, so they ride the same `serving#N` unit as any
+  /// other portion.
+  ///
+  /// Idempotent: servings merged earlier are dropped before [custom] goes in,
+  /// so a meal can be re-merged after one is added or deleted.
+  ///
+  /// A food with a scalable serving and no portion list keeps that serving as
+  /// the first entry. The bare `serving` unit means index 0, and without it
+  /// the first custom serving would take over what `serving` has always
+  /// meant for that food.
+  MealEntity withCustomPortions(List<MealPortionEntity> custom) {
+    final base = [
+      for (final portion in portions)
+        if (!portion.isCustom) portion,
+    ];
+    if (custom.isEmpty && base.length == portions.length) return this;
+    final serving = scalableServingQuantity;
+    if (base.isEmpty && custom.isNotEmpty && serving != null) {
+      final size = servingSize?.trim() ?? '';
+      base.add(
+        MealPortionEntity(
+          label: size.isNotEmpty
+              ? size
+              : '$serving ${servingUnit ?? ''}'.trim(),
+          gramWeight: serving,
+          localized: servingSizeIsLocalized,
+        ),
+      );
+    }
+    return withPortions([...base, ...custom]);
+  }
+
   /// The same meal, recording that its portions could not be looked up.
   ///
   /// [portions] stays as it is — empty, on the one path that calls this —

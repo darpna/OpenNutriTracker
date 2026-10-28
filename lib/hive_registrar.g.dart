@@ -8,6 +8,7 @@ import 'package:opennutritracker/core/data/data_source/user_activity_dbo.dart';
 import 'package:opennutritracker/core/data/dbo/app_theme_dbo.dart';
 import 'package:opennutritracker/core/data/dbo/calories_profile_dbo.dart';
 import 'package:opennutritracker/core/data/dbo/config_dbo.dart';
+import 'package:opennutritracker/core/data/dbo/custom_portion_dbo.dart';
 import 'package:opennutritracker/core/data/dbo/fasting_session_dbo.dart';
 import 'package:opennutritracker/core/data/dbo/favourite_meal_dbo.dart';
 import 'package:opennutritracker/core/data/dbo/intake_dbo.dart';
@@ -32,6 +33,7 @@ extension HiveRegistrar on HiveInterface {
     registerAdapter(CaloriesProfileDBOAdapter());
     registerAdapter(ConfigDBOAdapter());
     registerAdapter(CustomActivityTemplateDBOAdapter());
+    registerAdapter(CustomPortionDBOAdapter());
     registerAdapter(FastingSessionDBOAdapter());
     registerAdapter(FavouriteMealDBOAdapter());
     registerAdapter(IntakeDBOAdapter());
@@ -61,6 +63,7 @@ extension IsolatedHiveRegistrar on IsolatedHiveInterface {
     registerAdapter(CaloriesProfileDBOAdapter());
     registerAdapter(ConfigDBOAdapter());
     registerAdapter(CustomActivityTemplateDBOAdapter());
+    registerAdapter(CustomPortionDBOAdapter());
     registerAdapter(FastingSessionDBOAdapter());
     registerAdapter(FavouriteMealDBOAdapter());
     registerAdapter(IntakeDBOAdapter());
