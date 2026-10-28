@@ -30,6 +30,7 @@ next to its CSV counterpart will not find one.
 | `custom_activity_templates.json` | Saved custom activities — name and typical kcal.         |
 | `goal_settings.json`             | The profile's goal settings. See [below](#goal_settingsjson). |
 | `user_favourites.json`           | The starred foods and meals, each with a meal snapshot. See [below](#user_favouritesjson). |
+| `user_custom_portions.json`      | The servings you named for your foods ("1 bowl = 250 g"). See [below](#user_custom_portionsjson). |
 | `tracked_day_boundary.json`      | The day boundary the tracked days are keyed by. See [below](#tracked_day_boundaryjson--tracked_day_boundarycsv). |
 
 **CSV bundle**
@@ -348,6 +349,36 @@ importing the same zip twice leaves one entry per food; favourites the zip
 does not carry stay on the list. Where the file lists one food more than once
 (only a hand-edited file can), the last entry wins. Like every other file, it
 is parsed in full before anything on the device changes.
+
+### `user_custom_portions.json`
+
+Array of the servings you added to a food ("1 bowl = 250 g"), one per serving. They are shared by
+every profile, like the custom-meal and recipe libraries. See
+`lib/core/data/dbo/custom_portion_dbo.dart`.
+
+```jsonc
+[
+  {
+    "id": "5b1c0d0e-…",
+    "foodKey": "off:3017620422003",
+    "label": "1 bowl",
+    "gramWeight": 250.0,
+    "unit": "g",
+    "createdAt": "2026-10-01T08:00:00.000"
+  }
+]
+```
+
+`foodKey` is the food's identity, the same key a favourite uses: the meal's `source`, a colon and its
+`code` — or its `name` when it has none. `gramWeight` is what one serving weighs in `unit` (`g`, or
+`ml` for a food measured in millilitres) and is always greater than zero; a row with a blank `label` or
+`foodKey` or a weight that is not a positive number is skipped on import. `unit` defaults to `g` when
+absent.
+
+The file is optional on import, so zips from before custom servings existed still restore. An
+imported serving replaces the one with the same `id`; servings the zip does not carry stay. A logged
+entry never refers to a serving: the amount is converted to grams before it is stored and its `unit`
+is the plain `serving`, so the intake files are unchanged. CSV exports leave the file out.
 
 ## CSV schema
 
