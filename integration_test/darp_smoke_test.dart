@@ -426,10 +426,14 @@ Future<void> _expectCard(
     reason: '"$name" should render as an IntakeCard',
   );
   final unit = S.of(tester.element(card)).kcalLabel;
+  // The card shows `(amount * (kcal100 / 100)).toInt()`, which truncates:
+  // 100 * (410 / 100) is 409.99999999999994 and renders as "409". Mirror that
+  // arithmetic instead of asserting the nominal value.
+  final shown = (100.0 * (kcal / 100.0)).toInt();
   expect(
-    find.descendant(of: card, matching: find.text('$kcal $unit')),
+    find.descendant(of: card, matching: find.text('$shown $unit')),
     findsOneWidget,
-    reason: '"$name" should show $kcal $unit on ${page.toString()}',
+    reason: '"$name" should show $shown $unit on ${page.toString()}',
   );
 }
 

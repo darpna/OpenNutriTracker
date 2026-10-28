@@ -227,8 +227,12 @@ jobs:
           disable-animations: true
           script: bash integration_test/darp_smoke_run.sh 1
 
+      # Only when the test never got to report a gate (emulator or build
+      # failure). A failed gate is deterministic: rerunning it costs ten
+      # minutes and proves nothing.
       - name: Smoke test (retry once)
-        if: steps.smoke1.outcome == 'failure'
+        id: smoke2
+        if: steps.smoke1.outcome == 'failure' && hashFiles('smoke-ran-1') == ''
         timeout-minutes: 10
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -239,6 +243,14 @@ jobs:
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: bash integration_test/darp_smoke_run.sh 2
+
+      # continue-on-error hides attempt 1's failure from the job; surface it
+      # unless the retry ran and passed.
+      - name: Fail the job if smoke failed
+        if: steps.smoke1.outcome == 'failure' && steps.smoke2.outcome != 'success'
+        run: |
+          echo '::error::darp smoke failed; see the RESULT lines and the smoke-logs artifact'
+          exit 1
 
       - name: Write RESULT lines to the job summary
         if: always()

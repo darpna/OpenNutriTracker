@@ -16,4 +16,9 @@ status="${PIPESTATUS[0]}"
 
 # The test prints `RESULT <key=value ...>`; the reporter may prefix the line.
 grep -o 'RESULT .*' "$log" | sort -u > "$results" || true
+
+# Marks that the test body ran far enough to report a gate, so the workflow can
+# tell a failed gate (a real finding, not worth a retry) from a boot or build
+# failure (worth one fresh emulator).
+grep -q '^RESULT gate=' "$results" && echo ran > "smoke-ran-${attempt}"
 exit "$status"
