@@ -18,6 +18,11 @@ import 'package:opennutritracker/core/utils/id_generator.dart';
 import 'package:opennutritracker/core/utils/tracked_day_lock.dart';
 import 'package:opennutritracker/features/add_meal/data/repository/products_repository.dart';
 import 'package:opennutritracker/features/add_meal/domain/entity/meal_entity.dart';
+import 'package:opennutritracker/features/add_meal/util/portion_unit.dart';
+import 'package:opennutritracker/features/custom_portion/domain/entity/custom_portion_entity.dart';
+import 'package:opennutritracker/features/custom_portion/domain/usecase/add_custom_portion_usecase.dart';
+import 'package:opennutritracker/features/custom_portion/domain/usecase/delete_custom_portion_usecase.dart';
+import 'package:opennutritracker/features/custom_portion/domain/usecase/get_custom_portions_usecase.dart';
 import 'package:opennutritracker/features/meal_detail/util/meal_quantity_converter.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
 
@@ -39,6 +44,18 @@ class MealDetailBloc extends Bloc<MealDetailEvent, MealDetailState> {
   /// food (#1307). Left out where a test does not log a starred food.
   final ToggleFavouriteMealUsecase? _favourites;
 
+  /// The user's own servings. Left out where a test does not use them, in
+  /// which case no food has any.
+  final GetCustomPortionsUsecase? _getCustomPortions;
+  final AddCustomPortionUsecase? _addCustomPortion;
+  final DeleteCustomPortionUsecase? _deleteCustomPortion;
+
+  /// Whether the user's own servings can be saved from this bloc.
+  bool get supportsCustomPortions =>
+      _getCustomPortions != null &&
+      _addCustomPortion != null &&
+      _deleteCustomPortion != null;
+
   MealDetailBloc(
     this._addIntakeUseCase,
     this._addTrackedDayUsecase,
@@ -48,7 +65,13 @@ class MealDetailBloc extends Bloc<MealDetailEvent, MealDetailState> {
     this._productsRepository,
     this._remoteSearchCacheDataSource, {
     ToggleFavouriteMealUsecase? favourites,
+    GetCustomPortionsUsecase? getCustomPortions,
+    AddCustomPortionUsecase? addCustomPortion,
+    DeleteCustomPortionUsecase? deleteCustomPortion,
   }) : _favourites = favourites,
+       _getCustomPortions = getCustomPortions,
+       _addCustomPortion = addCustomPortion,
+       _deleteCustomPortion = deleteCustomPortion,
        super(
           MealDetailInitial(
             totalQuantityConverted: '100',
@@ -122,6 +145,61 @@ class MealDetailBloc extends Bloc<MealDetailEvent, MealDetailState> {
       }
     });
 
+    on<LoadCustomPortionsEvent>((event, emit) async {
+      final get = _getCustomPortions;
+      if (get == null) return;
+      try {
+        emit(
+          state.copyWith(
+            customPortions: await get.getCustomPortions(event.meal),
+            clearAddedCustomPortionId: true,
+          ),
+        );
+      } catch (e, st) {
+        log.warning('Could not load custom portions', e, st);
+      }
+    });
+
+    on<AddCustomPortionEvent>((event, emit) async {
+      final add = _addCustomPortion;
+      final get = _getCustomPortions;
+      if (add == null || get == null) return;
+      try {
+        final saved = await add.addCustomPortion(
+          event.meal,
+          label: event.label,
+          gramWeight: event.gramWeight,
+        );
+        emit(
+          state.copyWith(
+            customPortions: await get.getCustomPortions(event.meal),
+            addedCustomPortionId: saved.id,
+          ),
+        );
+      } catch (e, st) {
+        log.severe('Could not save custom portion', e, st);
+        Sentry.captureException(e, stackTrace: st);
+      }
+    });
+
+    on<DeleteCustomPortionEvent>((event, emit) async {
+      final delete = _deleteCustomPortion;
+      final get = _getCustomPortions;
+      if (delete == null || get == null) return;
+      try {
+        await delete.deleteCustomPortion(event.portionId);
+        emit(
+          state.copyWith(
+            customPortions: await get.getCustomPortions(event.meal),
+            clearAddedCustomPortionId: true,
+          ),
+        );
+      } catch (e, st) {
+        log.severe('Could not delete custom portion', e, st);
+        Sentry.captureException(e, stackTrace: st);
+      }
+    });
+
     on<HydrateMealEvent>((event, emit) async {
       final meal = event.meal;
       final code = meal.code;
@@ -172,7 +250,9 @@ class MealDetailBloc extends Bloc<MealDetailEvent, MealDetailState> {
 
     final intakeEntity = IntakeEntity(
       id: IdGenerator.getUniqueID(),
-      unit: unit,
+      // `serving#2` names a portion for the screen; the stored vocabulary
+      // stays the closed set the export format is written against.
+      unit: storedUnit(unit),
       amount: quantity,
       type: type,
       meal: meal,

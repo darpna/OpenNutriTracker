@@ -257,6 +257,7 @@ lib/
     profile/      # User stats, BMI, goals, weight history chart
     add_meal/     # Food search (text + barcode) and meal logging
     meal_detail/  # Nutritional detail view for a food item, with daily kcal banner
+    custom_portion/ # User-defined servings per food ("1 bowl = 250 g"), merged into the portion pickers
     edit_meal/    # Edit a logged intake entry, custom meal create / template
     scanner/      # Barcode camera scanner (with manual entry fallback)
     add_activity/ # Log physical activity, including custom kcal templates
@@ -311,6 +312,7 @@ Named routes are defined in `NavigationOptions` and registered in `main.dart`. T
 | `WaterIntakeBox`               | `WaterIntakeDBO`            | Water log entries powering the home chip                             |
 | `FastingBox`                   | `FastingSessionDBO`         | Fasting sessions (current and historical) for the timer              |
 | `FavouriteMealBox`             | `FavouriteMealDBO`          | Starred foods and meals for the add-food Favourites tab              |
+| `CustomPortionBox`             | `CustomPortionDBO`          | Servings the user named for a food ("1 bowl = 250 g"), shared by all profiles |
 
 When adding a new `@HiveType`, assign a unique `typeId`. Check all existing DBOs to avoid collisions — IDs are currently scattered across 0–30+.
 
@@ -336,7 +338,7 @@ Calculation utilities live in `lib/core/utils/calc/`:
 
 ### Data export / import
 
-Settings screen exports to a `.zip` that bundles intakes, activities and tracked days as JSON (canonical, re-importable) or CSV (flat, for spreadsheets); recipes, favourites, the weight log and custom activity templates are JSON-only — see [`docs/export-format.md`](docs/export-format.md) for the full schema. Import accepts the same zip and merges its contents into the existing boxes. User profile data (height, weight, birthday, PAL, goal) is intentionally **not** included in the export. Settings → Import also supports a pasted JSON blob for ad-hoc meal imports.
+Settings screen exports to a `.zip` that bundles intakes, activities and tracked days as JSON (canonical, re-importable) or CSV (flat, for spreadsheets); recipes, favourites, custom portions, the weight log and custom activity templates are JSON-only — see [`docs/export-format.md`](docs/export-format.md) for the full schema. Import accepts the same zip and merges its contents into the existing boxes. User profile data (height, weight, birthday, PAL, goal) is intentionally **not** included in the export. Settings → Import also supports a pasted JSON blob for ad-hoc meal imports.
 
 ## GitHub issue and PR templates
 

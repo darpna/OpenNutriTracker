@@ -10,6 +10,8 @@ import 'package:opennutritracker/core/utils/serving_label_localizer.dart';
 import 'package:opennutritracker/core/utils/navigation_options.dart';
 import 'package:opennutritracker/core/utils/navigation_predicates.dart';
 import 'package:opennutritracker/features/add_meal/domain/entity/meal_entity.dart';
+import 'package:opennutritracker/features/add_meal/domain/entity/meal_portion_entity.dart';
+import 'package:opennutritracker/features/add_meal/util/portion_unit.dart';
 import 'package:opennutritracker/features/diary/presentation/bloc/calendar_day_bloc.dart';
 import 'package:opennutritracker/features/diary/presentation/bloc/diary_bloc.dart';
 import 'package:opennutritracker/features/home/presentation/bloc/home_bloc.dart';
@@ -32,6 +34,14 @@ class MealDetailBottomSheet extends StatefulWidget {
 
   final Function(String?, String?) onQuantityOrUnitChanged;
 
+  /// Opens the "Add serving" dialog. Null hides the action, which is how a
+  /// sheet without custom servings behaves.
+  final VoidCallback? onAddServing;
+
+  /// Deletes one of the user's own servings once they confirm. Null makes the
+  /// servings read-only.
+  final void Function(MealPortionEntity portion)? onDeleteServing;
+
   const MealDetailBottomSheet({
     super.key,
     required this.product,
@@ -42,6 +52,8 @@ class MealDetailBottomSheet extends StatefulWidget {
     required this.mealDetailBloc,
     required this.selectedUnit,
     this.usesImperialUnits = false,
+    this.onAddServing,
+    this.onDeleteServing,
   });
 
   @override
@@ -49,7 +61,15 @@ class MealDetailBottomSheet extends StatefulWidget {
 }
 
 class _MealDetailBottomSheetState extends State<MealDetailBottomSheet> {
+  /// The unit dropdown's value for its "Add serving" entry. It is an action,
+  /// never a unit: it is intercepted before it can reach the bloc.
+  static const _addServingValue = 'custom-portion-add';
+
   final _quantityFocusNode = FocusNode();
+
+  /// Bumped to rebuild the unit dropdown on its previous value after the
+  /// "Add serving" entry has been picked and handled.
+  int _unitPickerEpoch = 0;
 
   /// Set from the first tap on Add until its submission ends. The save can
   /// wait for the tracked-day lock (#1317) with the sheet still open, and
@@ -132,10 +152,12 @@ class _MealDetailBottomSheetState extends State<MealDetailBottomSheet> {
         // the row entirely when nothing applies (no orphan SizedBox).
         final quickOptions = productMissingRequiredInfo
             ? const <QuickServingOption>[]
-            : quickServingOptionsFor(
-                widget.product,
-                S.of(context).gramUnit,
-              );
+            : quickServingOptionsFor(widget.product, S.of(context).gramUnit);
+        final showAddServingChip =
+            !productMissingRequiredInfo &&
+            widget.onAddServing != null &&
+            offersAddServingChip(widget.product);
+        final unitEntries = _unitEntries(context);
         return Container(
           decoration: BoxDecoration(
             border: Border(
@@ -181,34 +203,45 @@ class _MealDetailBottomSheetState extends State<MealDetailBottomSheet> {
                           ),
                           const SizedBox(width: 16.0),
                           Expanded(
-                            child: DropdownButtonFormField(
+                            child: DropdownButtonFormField<String>(
                               isExpanded: true,
                               itemHeight: null,
-                              initialValue: widget.selectedUnit,
-                              key: ValueKey(widget.selectedUnit),
+                              // A unit the food no longer offers (a deleted
+                              // serving) shows empty instead of asserting.
+                              initialValue:
+                                  unitEntries.any(
+                                    (e) => e.value == widget.selectedUnit,
+                                  )
+                                  ? widget.selectedUnit
+                                  : null,
+                              key: ValueKey(
+                                '${widget.selectedUnit}#$_unitPickerEpoch',
+                              ),
                               decoration: InputDecoration(
                                 border: const OutlineInputBorder(
                                   borderRadius: Dimens.borderRadiusM,
                                 ),
                                 labelText: S.of(context).unitLabel,
                               ),
-                              items: <DropdownMenuItem<String>>[
-                                // #629: a serving the app cannot scale
-                                // is a no-op dressed as a unit.
-                                if (widget.product.scalableServingQuantity !=
-                                    null)
-                                  _getServingDropdownItem(context),
-                                if (widget.product.isSolid ||
-                                    !widget.product.isLiquid &&
-                                        !widget.product.isSolid)
-                                  ..._getSolidUnitDropdownItems(context),
-                                if (widget.product.isLiquid ||
-                                    !widget.product.isLiquid &&
-                                        !widget.product.isSolid)
-                                  ..._getLiquidUnitDropdownItems(context),
-                                ..._getOtherDropdownItems(context),
+                              items: [
+                                for (final entry in unitEntries)
+                                  DropdownMenuItem(
+                                    value: entry.value,
+                                    child: entry.menuChild,
+                                  ),
+                              ],
+                              selectedItemBuilder: (context) => [
+                                for (final entry in unitEntries)
+                                  entry.selectedChild,
                               ],
                               onChanged: (value) {
+                                if (value == _addServingValue) {
+                                  // An action, not a unit: put the picker back
+                                  // on what it showed, then ask.
+                                  setState(() => _unitPickerEpoch++);
+                                  widget.onAddServing?.call();
+                                  return;
+                                }
                                 widget.onQuantityOrUnitChanged(
                                   widget.quantityTextController.text,
                                   value,
@@ -218,7 +251,7 @@ class _MealDetailBottomSheetState extends State<MealDetailBottomSheet> {
                           ),
                         ],
                       ),
-                      if (quickOptions.isNotEmpty)
+                      if (quickOptions.isNotEmpty || showAddServingChip)
                         Padding(
                           padding: const EdgeInsets.only(
                             top: Dimens.spacing12,
@@ -236,6 +269,20 @@ class _MealDetailBottomSheetState extends State<MealDetailBottomSheet> {
                                       label: Text(option.label),
                                       onPressed: () =>
                                           _onQuickServingSelected(option),
+                                    ),
+                                  ),
+                                if (showAddServingChip)
+                                  Semantics(
+                                    identifier: 'meal-detail-chip-add-serving',
+                                    child: ActionChip(
+                                      avatar: const Icon(
+                                        Icons.add_rounded,
+                                        size: 18,
+                                      ),
+                                      label: Text(
+                                        S.of(context).customPortionAddAction,
+                                      ),
+                                      onPressed: widget.onAddServing,
                                     ),
                                   ),
                               ],
@@ -436,7 +483,123 @@ class _MealDetailBottomSheetState extends State<MealDetailBottomSheet> {
     );
   }
 
-  DropdownMenuItem<String> _getServingDropdownItem(BuildContext context) {
+  /// The unit picker's rows, in order: the food's portions (its own, then the
+  /// user's), the weight and volume units, and the "Add serving" action.
+  List<_UnitEntry> _unitEntries(BuildContext context) {
+    final portions = widget.product.portions;
+    return [
+      if (portions.isNotEmpty)
+        for (var i = 0; i < portions.length; i++)
+          _portionEntry(context, i, portions[i])
+      // #629: a serving the app cannot scale is a no-op dressed as a unit.
+      else if (widget.product.scalableServingQuantity != null)
+        _UnitEntry.plain(
+          UnitDropdownItem.serving.toString(),
+          _servingText(context),
+        ),
+      if (widget.product.isSolid ||
+          !widget.product.isLiquid && !widget.product.isSolid) ...[
+        _UnitEntry.plain(UnitDropdownItem.g.toString(), S.of(context).gramUnit),
+        _UnitEntry.plain(UnitDropdownItem.oz.toString(), S.of(context).ozUnit),
+      ],
+      if (widget.product.isLiquid ||
+          !widget.product.isLiquid && !widget.product.isSolid) ...[
+        _UnitEntry.plain(
+          UnitDropdownItem.ml.toString(),
+          S.of(context).milliliterUnit,
+        ),
+        _UnitEntry.plain(
+          UnitDropdownItem.flOz.toString(),
+          S.of(context).flOzUnit,
+        ),
+      ],
+      _UnitEntry.plain(
+        UnitDropdownItem.gml.toString(),
+        "${S.of(context).notAvailableLabel} (${S.of(context).gramMilliliterUnit})",
+      ),
+      if (widget.onAddServing != null)
+        _UnitEntry(
+          value: _addServingValue,
+          menuChild: Semantics(
+            identifier: 'meal-detail-unit-add-serving',
+            child: Row(
+              children: [
+                const Icon(Icons.add_rounded, size: 18),
+                const SizedBox(width: Dimens.spacing8),
+                Expanded(
+                  child: Text(
+                    S.of(context).customPortionAddAction,
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          selectedChild: const SizedBox.shrink(),
+        ),
+    ];
+  }
+
+  _UnitEntry _portionEntry(
+    BuildContext context,
+    int index,
+    MealPortionEntity portion,
+  ) {
+    final value = portionUnit(index);
+    if (!portion.isCustom) {
+      // Index 0 keeps the serving text the sheet has always shown for it.
+      return _UnitEntry.plain(
+        value,
+        index == 0
+            ? _servingText(context)
+            : _portionText(context, portion.label),
+      );
+    }
+    final label = Text(
+      portion.label,
+      overflow: TextOverflow.ellipsis,
+      maxLines: 1,
+    );
+    final own = Row(
+      children: [
+        Icon(
+          Icons.person_outline_rounded,
+          size: 16,
+          semanticLabel: S.of(context).customPortionOwnLabel,
+        ),
+        const SizedBox(width: Dimens.spacing4),
+        Expanded(child: label),
+      ],
+    );
+    final onDelete = widget.onDeleteServing;
+    return _UnitEntry(
+      value: value,
+      // Long-press is only wired in the open menu, so the closed field is
+      // not a delete trigger.
+      menuChild: onDelete == null
+          ? own
+          : GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onLongPress: () {
+                // Close the menu first: it lists the serving being deleted.
+                Navigator.of(context).pop();
+                onDelete(portion);
+              },
+              child: own,
+            ),
+      selectedChild: own,
+    );
+  }
+
+  String _portionText(BuildContext context, String label) {
+    final localized = localizeServingLabel(S.of(context), label);
+    return widget.usesImperialUnits
+        ? imperialServingLabel(S.of(context), localized)
+        : localized;
+  }
+
+  String _servingText(BuildContext context) {
     // Custom meals are seeded from MealEntity.empty(), which carries an empty
     // servingSize string rather than null. An empty (or whitespace-only)
     // description should fall through to the constructed label so the option
@@ -448,71 +611,27 @@ class _MealDetailBottomSheetState extends State<MealDetailBottomSheet> {
         ? localizeServingLabel(S.of(context), servingSize)
         : '${S.of(context).servingLabel} (${widget.product.servingQuantity} ${widget.product.servingUnit})';
     // The label is the food's own text, in grams or millilitres (#1368).
-    final servingText = widget.usesImperialUnits
+    return widget.usesImperialUnits
         ? imperialServingLabel(S.of(context), servingLabel)
         : servingLabel;
-    return DropdownMenuItem(
-      value: UnitDropdownItem.serving.toString(),
-      child: Text(servingText, overflow: TextOverflow.ellipsis, maxLines: 1),
-    );
+  }
+}
+
+/// One row of the unit picker: what it is called in the open menu, and what
+/// the closed field shows once it is selected.
+class _UnitEntry {
+  const _UnitEntry({
+    required this.value,
+    required this.menuChild,
+    required this.selectedChild,
+  });
+
+  factory _UnitEntry.plain(String value, String text) {
+    final child = Text(text, overflow: TextOverflow.ellipsis, maxLines: 1);
+    return _UnitEntry(value: value, menuChild: child, selectedChild: child);
   }
 
-  List<DropdownMenuItem<String>> _getSolidUnitDropdownItems(
-    BuildContext context,
-  ) {
-    return [
-      DropdownMenuItem(
-        value: UnitDropdownItem.g.toString(),
-        child: Text(
-          S.of(context).gramUnit,
-          overflow: TextOverflow.ellipsis,
-          maxLines: 1,
-        ),
-      ),
-      DropdownMenuItem(
-        value: UnitDropdownItem.oz.toString(),
-        child: Text(
-          S.of(context).ozUnit,
-          overflow: TextOverflow.ellipsis,
-          maxLines: 1,
-        ),
-      ),
-    ];
-  }
-
-  List<DropdownMenuItem<String>> _getLiquidUnitDropdownItems(
-    BuildContext context,
-  ) {
-    return [
-      DropdownMenuItem(
-        value: UnitDropdownItem.ml.toString(),
-        child: Text(
-          S.of(context).milliliterUnit,
-          overflow: TextOverflow.ellipsis,
-          maxLines: 1,
-        ),
-      ),
-      DropdownMenuItem(
-        value: UnitDropdownItem.flOz.toString(),
-        child: Text(
-          S.of(context).flOzUnit,
-          overflow: TextOverflow.ellipsis,
-          maxLines: 1,
-        ),
-      ),
-    ];
-  }
-
-  List<DropdownMenuItem<String>> _getOtherDropdownItems(BuildContext context) {
-    return [
-      DropdownMenuItem(
-        value: UnitDropdownItem.gml.toString(),
-        child: Text(
-          "${S.of(context).notAvailableLabel} (${S.of(context).gramMilliliterUnit})",
-          overflow: TextOverflow.ellipsis,
-          maxLines: 1,
-        ),
-      ),
-    ];
-  }
+  final String value;
+  final Widget menuChild;
+  final Widget selectedChild;
 }

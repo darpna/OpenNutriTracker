@@ -9,6 +9,9 @@ import 'package:opennutritracker/features/add_meal/domain/usecase/resolve_parsed
 import 'package:opennutritracker/features/add_meal/util/meal_text_parser.dart';
 import 'package:opennutritracker/features/add_meal/util/portion_match.dart';
 import 'package:opennutritracker/features/add_meal/util/portion_unit.dart';
+import 'package:opennutritracker/features/custom_portion/domain/usecase/add_custom_portion_usecase.dart';
+import 'package:opennutritracker/features/custom_portion/domain/usecase/delete_custom_portion_usecase.dart';
+import 'package:opennutritracker/features/custom_portion/domain/usecase/get_custom_portions_usecase.dart';
 import 'package:opennutritracker/features/meal_detail/presentation/bloc/meal_detail_bloc.dart';
 import 'package:opennutritracker/features/meal_detail/util/meal_quantity_converter.dart';
 
@@ -354,6 +357,7 @@ class BulkAddRow extends Equatable {
   }
 
   BulkAddRow copyWith({
+    ResolvedMealItem? resolved,
     int? selectedIndex,
     String? amountText,
     String? unit,
@@ -361,7 +365,7 @@ class BulkAddRow extends Equatable {
     bool? unitChosenByUser,
     bool? amountEditedByUser,
   }) => BulkAddRow(
-    resolved: resolved,
+    resolved: resolved ?? this.resolved,
     selectedIndex: selectedIndex ?? this.selectedIndex,
     amountText: amountText ?? this.amountText,
     unit: unit ?? this.unit,
@@ -374,6 +378,8 @@ class BulkAddRow extends Equatable {
   @override
   List<Object?> get props => [
     resolved.parsed.query,
+    // A serving added or deleted changes what the unit picker offers.
+    meal?.portions,
     selectedIndex,
     amountText,
     unit,
@@ -400,11 +406,29 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
   /// True when [attempt] is no longer the read the screen is waiting on.
   bool _superseded(int attempt) => attempt != _attempt;
 
+  /// The user's own servings. Left out where a test does not use them, in
+  /// which case no food has any and the picker has no "Add serving" entry.
+  final GetCustomPortionsUsecase? _getCustomPortions;
+  final AddCustomPortionUsecase? _addCustomPortion;
+  final DeleteCustomPortionUsecase? _deleteCustomPortion;
+
+  /// Whether the review rows can save and delete the user's own servings.
+  bool get supportsCustomPortions =>
+      _getCustomPortions != null &&
+      _addCustomPortion != null &&
+      _deleteCustomPortion != null;
+
   BulkAddBloc(
     this._resolveParsedMealsUseCase,
     this._readMealTextUseCase,
-    this._readMealPhotoUseCase,
-  ) : super(const BulkAddInitial()) {
+    this._readMealPhotoUseCase, {
+    GetCustomPortionsUsecase? getCustomPortions,
+    AddCustomPortionUsecase? addCustomPortion,
+    DeleteCustomPortionUsecase? deleteCustomPortion,
+  }) : _getCustomPortions = getCustomPortions,
+       _addCustomPortion = addCustomPortion,
+       _deleteCustomPortion = deleteCustomPortion,
+       super(const BulkAddInitial()) {
     on<ParseBulkTextEvent>(_onParse);
     on<ReadMealPhotoEvent>(_onReadPhoto);
     on<ReadMealPhotoFailedEvent>(
@@ -415,6 +439,8 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
     on<ChangeRowAmountEvent>(_onChangeAmount);
     on<ChangeRowUnitEvent>(_onChangeUnit);
     on<ToggleRowSkippedEvent>(_onToggleSkipped);
+    on<AddRowCustomPortionEvent>(_onAddCustomPortion);
+    on<DeleteRowCustomPortionEvent>(_onDeleteCustomPortion);
   }
 
   Future<void> _onParse(
@@ -537,7 +563,12 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
     }
 
     try {
-      final resolved = await _resolveParsedMealsUseCase.resolve(parsed.items);
+      final resolved = [
+        for (final item in await _resolveParsedMealsUseCase.resolve(
+          parsed.items,
+        ))
+          await _withCustomPortions(item),
+      ];
       if (emit.isDone || _superseded(attempt)) return;
 
       emit(
@@ -731,5 +762,136 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
     final rows = [...current.rows];
     rows[index] = change(rows[index]);
     emit(current.copyWith(rows: rows));
+  }
+
+  /// [meal] with the servings the user saved for it after the portions it
+  /// has, so they take part in the unit picker, the portion matching below
+  /// and the conversion like any other. A failed read leaves the meal as it
+  /// was: a missing extra must not cost the row.
+  Future<MealEntity> _mealWithCustomPortions(MealEntity meal) async {
+    final get = _getCustomPortions;
+    if (get == null) return meal;
+    try {
+      final saved = await get.getCustomPortions(meal);
+      return meal.withCustomPortions([
+        for (final portion in saved) portion.toPortion(),
+      ]);
+    } catch (e, st) {
+      log.warning('Could not read custom portions', e, st);
+      return meal;
+    }
+  }
+
+  Future<ResolvedMealItem> _withCustomPortions(ResolvedMealItem item) async {
+    if (_getCustomPortions == null || !item.isResolved) return item;
+    return ResolvedMealItem(
+      parsed: item.parsed,
+      candidates: [
+        for (final candidate in item.candidates)
+          await _mealWithCustomPortions(candidate),
+      ],
+      selectedIndex: item.selectedIndex,
+      confidence: item.confidence,
+    );
+  }
+
+  /// [row] with [meal] in place of its selected candidate.
+  ResolvedMealItem _replaceSelected(BulkAddRow row, MealEntity meal) {
+    final candidates = [...row.resolved.candidates];
+    candidates[row.selectedIndex] = meal;
+    return ResolvedMealItem(
+      parsed: row.resolved.parsed,
+      candidates: candidates,
+      selectedIndex: row.resolved.selectedIndex,
+      confidence: row.resolved.confidence,
+    );
+  }
+
+  Future<void> _onAddCustomPortion(
+    AddRowCustomPortionEvent event,
+    Emitter<BulkAddState> emit,
+  ) async {
+    final add = _addCustomPortion;
+    final before = state;
+    if (add == null || before is! BulkAddLoadedState) return;
+    if (event.rowIndex < 0 || event.rowIndex >= before.rows.length) return;
+    final meal = before.rows[event.rowIndex].meal;
+    if (meal == null) return;
+
+    final MealEntity merged;
+    final String savedId;
+    try {
+      final saved = await add.addCustomPortion(
+        meal,
+        label: event.label,
+        gramWeight: event.gramWeight,
+      );
+      savedId = saved.id;
+      merged = await _mealWithCustomPortions(meal);
+    } catch (e, st) {
+      log.severe('Could not save custom portion', e, st);
+      return;
+    }
+    if (emit.isDone) return;
+
+    final index = merged.portions.indexWhere(
+      (portion) => portion.customPortionId == savedId,
+    );
+    // The new serving is what the row means: one of it, so the energy shows
+    // in grams like any other portion.
+    _updateRow(
+      event.rowIndex,
+      emit,
+      (row) => row.copyWith(
+        resolved: _replaceSelected(row, merged),
+        amountText: '1',
+        unit: index < 0 ? row.unit : portionUnit(index),
+        unitChosenByUser: true,
+        amountEditedByUser: true,
+      ),
+    );
+  }
+
+  Future<void> _onDeleteCustomPortion(
+    DeleteRowCustomPortionEvent event,
+    Emitter<BulkAddState> emit,
+  ) async {
+    final delete = _deleteCustomPortion;
+    final before = state;
+    if (delete == null || before is! BulkAddLoadedState) return;
+    if (event.rowIndex < 0 || event.rowIndex >= before.rows.length) return;
+    final meal = before.rows[event.rowIndex].meal;
+    if (meal == null) return;
+
+    final MealEntity merged;
+    try {
+      await delete.deleteCustomPortion(event.portionId);
+      merged = await _mealWithCustomPortions(meal);
+    } catch (e, st) {
+      log.severe('Could not delete custom portion', e, st);
+      return;
+    }
+    if (emit.isDone) return;
+
+    final imperial = before.usesImperialUnits;
+    _updateRow(event.rowIndex, emit, (row) {
+      // A row counting in the serving that went, or in one that slid into
+      // its place, goes back to the unit it would have started with.
+      final unit = row.unit;
+      final index = isPortionUnit(unit) ? effectivePortionIndex(unit) : null;
+      final moved =
+          index != null &&
+          index < meal.portions.length &&
+          meal.portions[index].isCustom &&
+          (index >= merged.portions.length ||
+              merged.portions[index].customPortionId !=
+                  meal.portions[index].customPortionId);
+      return row.copyWith(
+        resolved: _replaceSelected(row, merged),
+        unit: moved
+            ? _initialUnit(row.resolved.parsed, merged, imperial)
+            : null,
+      );
+    });
   }
 }

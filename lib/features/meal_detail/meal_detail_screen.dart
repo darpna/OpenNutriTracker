@@ -14,6 +14,10 @@ import 'package:opennutritracker/core/utils/locator.dart';
 import 'package:opennutritracker/core/utils/demo/unsplash_attribution.dart';
 import 'package:opennutritracker/core/utils/navigation_options.dart';
 import 'package:opennutritracker/features/add_meal/domain/entity/meal_entity.dart';
+import 'package:opennutritracker/features/add_meal/domain/entity/meal_portion_entity.dart';
+import 'package:opennutritracker/features/add_meal/util/portion_unit.dart';
+import 'package:opennutritracker/features/custom_portion/domain/usecase/add_custom_portion_usecase.dart';
+import 'package:opennutritracker/features/custom_portion/presentation/widgets/add_custom_portion_dialog.dart';
 import 'package:opennutritracker/features/add_meal/presentation/widgets/favourite_toggle_button.dart';
 import 'package:opennutritracker/features/edit_meal/presentation/edit_meal_screen.dart';
 import 'package:opennutritracker/features/meal_detail/presentation/bloc/meal_detail_bloc.dart';
@@ -45,6 +49,10 @@ class _MealDetailScreenState extends State<MealDetailScreen> {
   late MealDetailBloc _mealDetailBloc;
   final _scrollController = ScrollController();
 
+  /// What the screen was opened with, or the hydrated record that replaced
+  /// it: [meal] without the user's own servings, which are merged in again
+  /// whenever either changes.
+  late MealEntity _baseMeal;
   late MealEntity meal;
   late DateTime _day;
   late IntakeTypeEntity intakeTypeEntity;
@@ -141,7 +149,8 @@ class _MealDetailScreenState extends State<MealDetailScreen> {
       final args =
           ModalRoute.of(context)?.settings.arguments
               as MealDetailScreenArguments;
-      meal = args.mealEntity;
+      _baseMeal = args.mealEntity;
+      meal = _baseMeal;
       _day = args.day;
       intakeTypeEntity = args.intakeTypeEntity;
       _usesImperialUnits = args.usesImperialUnits;
@@ -151,6 +160,7 @@ class _MealDetailScreenState extends State<MealDetailScreen> {
       // (serving fields + micronutrients) once, in the background; the
       // listener in build() swaps the displayed meal in when it arrives.
       _mealDetailBloc.add(HydrateMealEvent(meal));
+      _mealDetailBloc.add(LoadCustomPortionsEvent(meal));
     }
 
     _mealDetailBloc.add(LoadDailyTotalsEvent(_day));
@@ -235,7 +245,8 @@ class _MealDetailScreenState extends State<MealDetailScreen> {
   /// default now that serving data exists); otherwise just recompute totals
   /// against the fuller nutriments while keeping the user's selection.
   void _onMealHydrated(MealEntity full) {
-    setState(() => meal = full);
+    _baseMeal = full;
+    setState(() => meal = _withCustomPortions(full));
     if (_userChangedSelection) {
       _mealDetailBloc.add(
         UpdateKcalEvent(
@@ -251,13 +262,105 @@ class _MealDetailScreenState extends State<MealDetailScreen> {
     }
   }
 
+  MealEntity _withCustomPortions(MealEntity base) => base.withCustomPortions([
+    for (final custom in _mealDetailBloc.state.customPortions)
+      custom.toPortion(),
+  ]);
+
+  /// The saved servings changed: loaded, added or deleted. Merges them into
+  /// [meal], and moves the selection where it has to go.
+  void _onCustomPortionsChanged(MealDetailState state) {
+    final previous = meal;
+    setState(() => meal = _withCustomPortions(_baseMeal));
+
+    final addedId = state.addedCustomPortionId;
+    if (addedId != null) {
+      // The serving just saved is what they meant to log: one of it, so the
+      // amount shows in grams the way any other portion does.
+      final index = meal.portions.indexWhere(
+        (portion) => portion.customPortionId == addedId,
+      );
+      if (index < 0) return;
+      _applyingInitialSelection = true;
+      try {
+        quantityTextController.text = '1';
+      } finally {
+        _applyingInitialSelection = false;
+      }
+      _userChangedSelection = true;
+      _mealDetailBloc.add(
+        UpdateKcalEvent(
+          meal: meal,
+          totalQuantity: '1',
+          selectedUnit: portionUnit(index),
+        ),
+      );
+      return;
+    }
+
+    // A deleted serving can leave the selection on nothing, or on the serving
+    // that slid into its place: start over from the defaults.
+    final selected = state.selectedUnit;
+    if (!isPortionUnit(selected)) return;
+    final index = effectivePortionIndex(selected);
+    final wasCustom =
+        index < previous.portions.length && previous.portions[index].isCustom;
+    final stillThere =
+        index < meal.portions.length &&
+        meal.portions[index].customPortionId ==
+            (wasCustom ? previous.portions[index].customPortionId : null);
+    if (wasCustom && !stillThere || index >= meal.portions.length) {
+      _initialUnit = "";
+      _initialQuantity = "";
+      _userChangedSelection = false;
+      _applyInitialSelection();
+    }
+  }
+
+  Future<void> _onAddServing() async {
+    final unit = customPortionUnitFor(meal) == 'ml'
+        ? S.of(context).milliliterUnit
+        : S.of(context).gramUnit;
+    final input = await showAddCustomPortionDialog(context, unit: unit);
+    if (input == null || !mounted) return;
+    _mealDetailBloc.add(
+      AddCustomPortionEvent(
+        meal: _baseMeal,
+        label: input.label,
+        gramWeight: input.gramWeight,
+      ),
+    );
+  }
+
+  Future<void> _onDeleteServing(MealPortionEntity portion) async {
+    final confirmed = await confirmDeleteCustomPortion(context, portion.label);
+    if (!confirmed || !mounted) return;
+    _mealDetailBloc.add(
+      DeleteCustomPortionEvent(
+        meal: _baseMeal,
+        portionId: portion.customPortionId!,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return BlocListener<MealDetailBloc, MealDetailState>(
-      bloc: _mealDetailBloc,
-      listenWhen: (prev, curr) =>
-          curr.hydratedMeal != null && curr.hydratedMeal != prev.hydratedMeal,
-      listener: (context, state) => _onMealHydrated(state.hydratedMeal!),
+    return MultiBlocListener(
+      listeners: [
+        BlocListener<MealDetailBloc, MealDetailState>(
+          bloc: _mealDetailBloc,
+          listenWhen: (prev, curr) =>
+              curr.hydratedMeal != null &&
+              curr.hydratedMeal != prev.hydratedMeal,
+          listener: (context, state) => _onMealHydrated(state.hydratedMeal!),
+        ),
+        BlocListener<MealDetailBloc, MealDetailState>(
+          bloc: _mealDetailBloc,
+          listenWhen: (prev, curr) =>
+              prev.customPortions != curr.customPortions,
+          listener: (context, state) => _onCustomPortionsChanged(state),
+        ),
+      ],
       child: SafeArea(
         child: Scaffold(
           backgroundColor:
@@ -282,21 +385,27 @@ class _MealDetailScreenState extends State<MealDetailScreen> {
               return const Center(child: CircularProgressIndicator());
             },
           ),
-        bottomSheet: BlocSelector<MealDetailBloc, MealDetailState, String>(
-          bloc: _mealDetailBloc,
-          selector: (state) => state.selectedUnit,
-          builder: (context, selectedUnit) {
-            return MealDetailBottomSheet(
-              product: meal,
-              day: _day,
-              intakeTypeEntity: intakeTypeEntity,
-              selectedUnit: selectedUnit,
-              usesImperialUnits: _usesImperialUnits,
-              mealDetailBloc: _mealDetailBloc,
-              quantityTextController: quantityTextController,
-              onQuantityOrUnitChanged: onQuantityOrUnitChanged,
-            );
-          },
+          bottomSheet: BlocSelector<MealDetailBloc, MealDetailState, String>(
+            bloc: _mealDetailBloc,
+            selector: (state) => state.selectedUnit,
+            builder: (context, selectedUnit) {
+              return MealDetailBottomSheet(
+                product: meal,
+                day: _day,
+                intakeTypeEntity: intakeTypeEntity,
+                selectedUnit: selectedUnit,
+                usesImperialUnits: _usesImperialUnits,
+                mealDetailBloc: _mealDetailBloc,
+                quantityTextController: quantityTextController,
+                onQuantityOrUnitChanged: onQuantityOrUnitChanged,
+                onAddServing: _mealDetailBloc.supportsCustomPortions
+                    ? _onAddServing
+                    : null,
+                onDeleteServing: _mealDetailBloc.supportsCustomPortions
+                    ? _onDeleteServing
+                    : null,
+              );
+            },
           ),
         ),
       ),
@@ -433,10 +542,9 @@ class _MealDetailScreenState extends State<MealDetailScreen> {
                       MealValueUnitText(
                         value: double.parse(totalQuantity),
                         meal: meal,
-                        displayUnit:
-                            selectedUnit == UnitDropdownItem.serving.toString()
-                                ? meal.servingUnit
-                                : selectedUnit,
+                        displayUnit: isPortionUnit(selectedUnit)
+                            ? meal.servingUnit
+                            : selectedUnit,
                         usesImperialUnits: _usesImperialUnits,
                         textStyle: Theme.of(context).textTheme.bodyMedium,
                         prefix: ' / ',

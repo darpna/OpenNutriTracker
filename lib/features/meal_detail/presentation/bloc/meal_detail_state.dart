@@ -20,6 +20,13 @@ abstract class MealDetailState extends Equatable {
   /// True while the hydration network call is in flight.
   final bool isHydrating;
 
+  /// The servings the user saved for this food, oldest first.
+  final List<CustomPortionEntity> customPortions;
+
+  /// Set when a serving was just saved, until the next change to the list:
+  /// the one the screen should select. Null otherwise.
+  final String? addedCustomPortionId;
+
   const MealDetailState({
     required this.totalQuantityConverted,
     this.totalKcal = 0,
@@ -31,21 +38,25 @@ abstract class MealDetailState extends Equatable {
     this.dayKcalGoal = 0,
     this.hydratedMeal,
     this.isHydrating = false,
+    this.customPortions = const [],
+    this.addedCustomPortionId,
   });
 
   @override
   List<Object?> get props => [
-        totalQuantityConverted,
-        totalKcal,
-        totalCarbs,
-        totalFat,
-        totalProtein,
-        selectedUnit,
-        dayKcalConsumed,
-        dayKcalGoal,
-        hydratedMeal,
-        isHydrating,
-      ];
+    totalQuantityConverted,
+    totalKcal,
+    totalCarbs,
+    totalFat,
+    totalProtein,
+    selectedUnit,
+    dayKcalConsumed,
+    dayKcalGoal,
+    hydratedMeal,
+    isHydrating,
+    customPortions,
+    addedCustomPortionId,
+  ];
 
   MealDetailInitial copyWith({
     String? totalQuantityConverted,
@@ -58,6 +69,9 @@ abstract class MealDetailState extends Equatable {
     double? dayKcalGoal,
     MealEntity? hydratedMeal,
     bool? isHydrating,
+    List<CustomPortionEntity>? customPortions,
+    String? addedCustomPortionId,
+    bool clearAddedCustomPortionId = false,
   }) {
     return MealDetailInitial(
       totalQuantityConverted:
@@ -71,6 +85,10 @@ abstract class MealDetailState extends Equatable {
       dayKcalGoal: dayKcalGoal ?? this.dayKcalGoal,
       hydratedMeal: hydratedMeal ?? this.hydratedMeal,
       isHydrating: isHydrating ?? this.isHydrating,
+      customPortions: customPortions ?? this.customPortions,
+      addedCustomPortionId: clearAddedCustomPortionId
+          ? null
+          : addedCustomPortionId ?? this.addedCustomPortionId,
     );
   }
 }
@@ -87,5 +105,7 @@ class MealDetailInitial extends MealDetailState {
     super.dayKcalGoal,
     super.hydratedMeal,
     super.isHydrating,
+    super.customPortions,
+    super.addedCustomPortionId,
   });
 }

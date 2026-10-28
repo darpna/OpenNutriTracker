@@ -52,3 +52,43 @@ class HydrateMealEvent extends MealDetailEvent {
   @override
   List<Object?> get props => [meal];
 }
+
+/// Reads the servings the user saved for [meal], so the sheet can list them
+/// after the portions the food already has.
+class LoadCustomPortionsEvent extends MealDetailEvent {
+  final MealEntity meal;
+
+  const LoadCustomPortionsEvent(this.meal);
+
+  @override
+  List<Object?> get props => [meal];
+}
+
+/// Saves "[label] = [gramWeight]" as a serving of [meal]. The state then
+/// names it in [MealDetailState.addedCustomPortionId] so the screen can
+/// select it.
+class AddCustomPortionEvent extends MealDetailEvent {
+  final MealEntity meal;
+  final String label;
+  final double gramWeight;
+
+  const AddCustomPortionEvent({
+    required this.meal,
+    required this.label,
+    required this.gramWeight,
+  });
+
+  @override
+  List<Object?> get props => [meal, label, gramWeight];
+}
+
+/// Deletes the saved serving [portionId] of [meal].
+class DeleteCustomPortionEvent extends MealDetailEvent {
+  final MealEntity meal;
+  final String portionId;
+
+  const DeleteCustomPortionEvent({required this.meal, required this.portionId});
+
+  @override
+  List<Object?> get props => [meal, portionId];
+}

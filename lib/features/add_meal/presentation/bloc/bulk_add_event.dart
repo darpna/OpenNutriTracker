@@ -125,3 +125,27 @@ class ToggleRowSkippedEvent extends BulkAddEvent {
   @override
   List<Object?> get props => [rowIndex];
 }
+
+/// Saves "[label] = [gramWeight]" as a serving of the food row [rowIndex]
+/// currently shows, and selects it with an amount of 1.
+class AddRowCustomPortionEvent extends BulkAddEvent {
+  final int rowIndex;
+  final String label;
+  final double gramWeight;
+
+  const AddRowCustomPortionEvent(this.rowIndex, this.label, this.gramWeight);
+
+  @override
+  List<Object?> get props => [rowIndex, label, gramWeight];
+}
+
+/// Deletes the saved serving [portionId] of the food row [rowIndex] shows.
+class DeleteRowCustomPortionEvent extends BulkAddEvent {
+  final int rowIndex;
+  final String portionId;
+
+  const DeleteRowCustomPortionEvent(this.rowIndex, this.portionId);
+
+  @override
+  List<Object?> get props => [rowIndex, portionId];
+}
