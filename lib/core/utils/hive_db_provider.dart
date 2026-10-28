@@ -5,6 +5,7 @@ import 'package:hive_ce_flutter/hive_flutter.dart';
 import 'package:opennutritracker/core/data/data_source/custom_activity_template_dbo.dart';
 import 'package:opennutritracker/core/data/data_source/user_activity_dbo.dart';
 import 'package:opennutritracker/core/data/dbo/config_dbo.dart';
+import 'package:opennutritracker/core/data/dbo/custom_portion_dbo.dart';
 import 'package:opennutritracker/core/data/dbo/favourite_meal_dbo.dart';
 import 'package:opennutritracker/core/data/dbo/fasting_session_dbo.dart';
 import 'package:opennutritracker/core/data/dbo/intake_dbo.dart';
@@ -53,6 +54,9 @@ class HiveDBProvider extends ChangeNotifier {
   static const cachedOffMealTimestampsBoxName = 'CachedOffMealTimestampsBox';
   // #70 follow-up: saved Custom activity templates (name + typical kcal).
   static const customActivityTemplateBoxName = 'CustomActivityTemplateBox';
+  // The servings the user named for a food ("1 bowl = 250 g"). Shared like
+  // the libraries above: they describe the food, not one person's diary.
+  static const customPortionBoxName = 'CustomPortionBox';
   static const weightLogBoxName = 'WeightLogBox';
   // #32: per-entry water intake log keyed by uuid; one row per sip so the
   // dialog's "undo last" can roll a single entry back without losing the
@@ -105,6 +109,7 @@ class HiveDBProvider extends ChangeNotifier {
   late final Box<MealDBO> customMealBox;
   late final Box<RecipeDBO> recipeBox;
   late final Box<CustomActivityTemplateDBO> customActivityTemplateBox;
+  late final Box<CustomPortionDBO> customPortionBox;
 
   // Per-profile boxes. Nullable rather than `late` so that a read during
   // the brief close/open window of a profile switch throws a descriptive
@@ -190,6 +195,7 @@ class HiveDBProvider extends ChangeNotifier {
     customActivityTemplateBox = await _openEncryptedBox(
       customActivityTemplateBoxName,
     );
+    customPortionBox = await _openEncryptedBox(customPortionBoxName);
   }
 
   /// Opens the per-profile box-set for [profileId] / [boxSuffix] and

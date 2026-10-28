@@ -3,6 +3,12 @@ import 'package:get_it/get_it.dart';
 import 'package:opennutritracker/core/data/data_source/config_data_source.dart';
 import 'package:opennutritracker/core/data/data_source/custom_activity_template_data_source.dart';
 import 'package:opennutritracker/core/data/data_source/favourite_meal_data_source.dart';
+import 'package:opennutritracker/features/custom_portion/data/data_source/custom_portion_data_source.dart';
+import 'package:opennutritracker/features/custom_portion/data/repository/custom_portion_repository_impl.dart';
+import 'package:opennutritracker/features/custom_portion/domain/repository/custom_portion_repository.dart';
+import 'package:opennutritracker/features/custom_portion/domain/usecase/add_custom_portion_usecase.dart';
+import 'package:opennutritracker/features/custom_portion/domain/usecase/delete_custom_portion_usecase.dart';
+import 'package:opennutritracker/features/custom_portion/domain/usecase/get_custom_portions_usecase.dart';
 import 'package:opennutritracker/core/data/data_source/health/health_service.dart';
 import 'package:opennutritracker/core/data/data_source/health/health_service_factory.dart';
 import 'package:opennutritracker/core/data/data_source/remote_search_cache_data_source.dart';
@@ -361,6 +367,9 @@ Future<void> initLocator() async {
       locator(),
       locator(),
       favourites: locator<ToggleFavouriteMealUsecase>(),
+      getCustomPortions: locator<GetCustomPortionsUsecase>(),
+      addCustomPortion: locator<AddCustomPortionUsecase>(),
+      deleteCustomPortion: locator<DeleteCustomPortionUsecase>(),
     ),
   );
   locator.registerFactory<ScannerBloc>(() => ScannerBloc(locator(), locator()));
@@ -369,7 +378,14 @@ Future<void> initLocator() async {
   );
   locator.registerFactory<AddMealBloc>(() => AddMealBloc(locator()));
   locator.registerFactory<BulkAddBloc>(
-    () => BulkAddBloc(locator(), locator(), locator()),
+    () => BulkAddBloc(
+      locator(),
+      locator(),
+      locator(),
+      getCustomPortions: locator<GetCustomPortionsUsecase>(),
+      addCustomPortion: locator<AddCustomPortionUsecase>(),
+      deleteCustomPortion: locator<DeleteCustomPortionUsecase>(),
+    ),
   );
   locator.registerFactory<ProductsBloc>(
     () => ProductsBloc(locator(), locator()),
@@ -537,6 +553,15 @@ Future<void> initLocator() async {
   locator.registerLazySingleton<ToggleFavouriteMealUsecase>(
     () => ToggleFavouriteMealUsecase(locator()),
   );
+  locator.registerLazySingleton<GetCustomPortionsUsecase>(
+    () => GetCustomPortionsUsecase(locator()),
+  );
+  locator.registerLazySingleton<AddCustomPortionUsecase>(
+    () => AddCustomPortionUsecase(locator()),
+  );
+  locator.registerLazySingleton<DeleteCustomPortionUsecase>(
+    () => DeleteCustomPortionUsecase(locator()),
+  );
   locator.registerLazySingleton<AddWaterIntakeUsecase>(
     () => AddWaterIntakeUsecase(locator()),
   );
@@ -564,6 +589,7 @@ Future<void> initLocator() async {
       locator(),
       locator(),
       locator(),
+      customPortionRepository: locator<CustomPortionRepository>(),
     ),
   );
   locator.registerLazySingleton(
@@ -576,6 +602,7 @@ Future<void> initLocator() async {
       locator(),
       locator(),
       locator(),
+      customPortionRepository: locator<CustomPortionRepository>(),
       restoreTrackedDays:
           (
             write, {
@@ -652,6 +679,9 @@ Future<void> initLocator() async {
   locator.registerLazySingleton<FavouriteMealRepository>(
     () => FavouriteMealRepository(locator(), locator(), locator()),
   );
+  locator.registerLazySingleton<CustomPortionRepository>(
+    () => CustomPortionRepositoryImpl(locator()),
+  );
   locator.registerLazySingleton<WaterIntakeRepository>(
     () => WaterIntakeRepository(locator()),
   );
@@ -696,6 +726,9 @@ Future<void> initLocator() async {
   );
   locator.registerLazySingleton<FavouriteMealDataSource>(
     () => FavouriteMealDataSource(hiveDBProvider),
+  );
+  locator.registerLazySingleton<CustomPortionDataSource>(
+    () => CustomPortionDataSource(hiveDBProvider),
   );
   locator.registerLazySingleton<WaterIntakeDataSource>(
     () => WaterIntakeDataSource(hiveDBProvider),

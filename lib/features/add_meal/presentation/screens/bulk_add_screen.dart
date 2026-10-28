@@ -14,12 +14,15 @@ import 'package:opennutritracker/core/utils/ai_model_catalogue.dart';
 import 'package:opennutritracker/core/utils/energy_display.dart';
 import 'package:opennutritracker/core/utils/locator.dart';
 import 'package:opennutritracker/core/utils/navigation_options.dart';
+import 'package:opennutritracker/features/add_meal/domain/entity/meal_portion_entity.dart';
 import 'package:opennutritracker/features/add_meal/domain/meal_photo_interpreter.dart';
 import 'package:opennutritracker/features/add_meal/domain/usecase/read_meal_text_usecase.dart';
 import 'package:opennutritracker/features/add_meal/presentation/bloc/bulk_add_bloc.dart';
 import 'package:opennutritracker/features/add_meal/util/meal_photo_encoder.dart';
 import 'package:opennutritracker/features/add_meal/util/portion_label.dart';
 import 'package:opennutritracker/features/add_meal/util/portion_unit.dart';
+import 'package:opennutritracker/features/custom_portion/domain/usecase/add_custom_portion_usecase.dart';
+import 'package:opennutritracker/features/custom_portion/presentation/widgets/add_custom_portion_dialog.dart';
 import 'package:opennutritracker/features/add_meal/util/meal_text_parser.dart';
 import 'package:opennutritracker/features/add_meal/presentation/widgets/own_server_wait_indicator.dart';
 import 'package:opennutritracker/features/add_meal/presentation/widgets/quick_add_bottom_sheet.dart';
@@ -59,6 +62,15 @@ class BulkAddScreen extends StatefulWidget {
 }
 
 class _BulkAddScreenState extends State<BulkAddScreen> {
+  /// The unit picker's value for its "Add serving" entry. An action, never a
+  /// unit: it is intercepted before it reaches the bloc.
+  static const _addServingValue = 'custom-portion-add';
+
+  /// A saved serving is the user's own words, so unlike a database portion it
+  /// is not trimmed to a household word; it is only kept short enough not to
+  /// blow the row out (#824).
+  static const _maxCustomLabelChars = 24;
+
   final _log = Logger('BulkAddScreen');
   final _bloc = locator<BulkAddBloc>();
   final _textController = TextEditingController();
@@ -1125,14 +1137,35 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
       },
     );
 
+    final supportsServings = _bloc.supportsCustomPortions && row.isResolved;
     final unit = DropdownButton<String>(
       value: row.effectiveUnit,
-      items: _unitItems(context, row),
+      items: _unitItems(context, index, row, supportsServings),
+      selectedItemBuilder: (context) =>
+          _selectedUnitItems(context, row, supportsServings),
+      // The menu is as wide as the button, which is as wide as the longest
+      // unit; the "Add serving" entry is wider than most of them.
+      menuWidth: supportsServings
+          ? math.max(
+              unitWidth,
+              _textWidth(
+                    context,
+                    S.of(context).customPortionAddAction,
+                    theme.textTheme.titleMedium,
+                  ) +
+                  _addServingIconWidth +
+                  _dropdownArrowWidth,
+            )
+          : null,
       // Only when it has a line to fill; on a shared line it takes the width
       // its longest unit needs, which is what `stacked` was measured against.
       isExpanded: stacked,
       onChanged: (value) {
-        if (value != null) _bloc.add(ChangeRowUnitEvent(index, value));
+        if (value == _addServingValue) {
+          _addServing(index, row);
+        } else if (value != null) {
+          _bloc.add(ChangeRowUnitEvent(index, value));
+        }
       },
     );
 
@@ -1226,20 +1259,110 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
     return kcal == null ? '' : EnergyDisplay.formatWithUnit(context, kcal);
   }
 
+  static const _addServingIconWidth = 26.0;
+
+  /// The portion [unit] names when it is one of the user's own servings.
+  MealPortionEntity? _customPortionOf(String unit, BulkAddRow row) {
+    final portions = row.meal?.portions ?? const <MealPortionEntity>[];
+    if (!isPortionUnit(unit)) return null;
+    final index = effectivePortionIndex(unit);
+    if (index >= portions.length) return null;
+    return portions[index].isCustom ? portions[index] : null;
+  }
+
+  Widget _unitText(BuildContext context, String unit, BulkAddRow row) {
+    final text = Text(
+      _unitLabel(context, unit, row),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+    );
+    if (_customPortionOf(unit, row) == null) return text;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(
+          Icons.person_outline_rounded,
+          size: 16,
+          semanticLabel: S.of(context).customPortionOwnLabel,
+        ),
+        const SizedBox(width: 4),
+        Flexible(child: text),
+      ],
+    );
+  }
+
   List<DropdownMenuItem<String>> _unitItems(
     BuildContext context,
+    int index,
     BulkAddRow row,
+    bool supportsServings,
   ) => [
     for (final unit in row.allowedUnits)
       DropdownMenuItem(
         value: unit,
-        child: Text(
-          _unitLabel(context, unit, row),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
+        child: _customPortionOf(unit, row) == null
+            ? _unitText(context, unit, row)
+            // Long-press deletes one of the user's own servings. Only in the
+            // open menu, so the closed field is not a delete trigger.
+            : GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onLongPress: () {
+                  Navigator.of(context).pop();
+                  _deleteServing(index, _customPortionOf(unit, row)!);
+                },
+                child: _unitText(context, unit, row),
+              ),
+      ),
+    if (supportsServings)
+      DropdownMenuItem(
+        value: _addServingValue,
+        child: Semantics(
+          identifier: 'bulk-add-unit-add-serving',
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.add_rounded, size: 18),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  S.of(context).customPortionAddAction,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
   ];
+
+  List<Widget> _selectedUnitItems(
+    BuildContext context,
+    BulkAddRow row,
+    bool supportsServings,
+  ) => [
+    for (final unit in row.allowedUnits) _unitText(context, unit, row),
+    if (supportsServings) const SizedBox.shrink(),
+  ];
+
+  Future<void> _addServing(int index, BulkAddRow row) async {
+    final meal = row.meal;
+    if (meal == null) return;
+    final input = await showAddCustomPortionDialog(
+      context,
+      unit: customPortionUnitFor(meal) == 'ml'
+          ? S.of(context).milliliterUnit
+          : S.of(context).gramUnit,
+    );
+    if (input == null || !mounted) return;
+    _bloc.add(AddRowCustomPortionEvent(index, input.label, input.gramWeight));
+  }
+
+  Future<void> _deleteServing(int index, MealPortionEntity portion) async {
+    final confirmed = await confirmDeleteCustomPortion(context, portion.label);
+    if (!confirmed || !mounted) return;
+    _bloc.add(DeleteRowCustomPortionEvent(index, portion.customPortionId!));
+  }
 
   /// Takes the row because one of the six units is not a fixed word: the
   /// food names its own portion, and "3 slice" says what "3 serving" only
@@ -1254,6 +1377,12 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
       final index = effectivePortionIndex(unit);
       if (index < portions.length) {
         final portion = portions[index];
+        if (portion.isCustom) {
+          final name = portion.label.trim();
+          return name.length <= _maxCustomLabelChars
+              ? name
+              : '${name.substring(0, _maxCustomLabelChars - 1)}…';
+        }
         final label = householdPortionLabel(
           portion.label,
           languageCode: Localizations.localeOf(context).languageCode,

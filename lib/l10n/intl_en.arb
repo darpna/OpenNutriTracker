@@ -1434,5 +1434,19 @@
   "healthSyncDisclosureContinueAction": "Continue",
   "healthSyncUnavailableLabel": "Health data is not available on this device. Workout import needs Health Connect on Android or Apple Health on iOS.",
   "sourcesEnergyCompensationTitle": "Workout calorie credit",
-  "sourcesEnergyCompensationDescription": "Imported workouts are credited with less than the energy your device reports. People compensate for exercise by burning fewer calories through the rest of the day — about 28% on average, and more at a higher body fat percentage. The suggested credit comes from that research and you can override it under Settings → Health sync. The energy itself is reported by the app or device that recorded the workout, not calculated with the app’s MET formula."
+  "sourcesEnergyCompensationDescription": "Imported workouts are credited with less than the energy your device reports. People compensate for exercise by burning fewer calories through the rest of the day — about 28% on average, and more at a higher body fat percentage. The suggested credit comes from that research and you can override it under Settings → Health sync. The energy itself is reported by the app or device that recorded the workout, not calculated with the app’s MET formula.",
+  "customPortionAddAction": "Add serving",
+  "customPortionNameLabel": "Serving name",
+  "customPortionNameHint": "e.g. 1 bowl",
+  "customPortionWeightLabel": "Weight ({unit})",
+  "@customPortionWeightLabel": {"placeholders": {"unit": {"type": "String"}}},
+  "customPortionNameRequired": "Enter a name for the serving",
+  "customPortionNameTooLong": "Use {max} characters or fewer",
+  "@customPortionNameTooLong": {"placeholders": {"max": {"type": "int"}}},
+  "customPortionWeightInvalid": "Enter a weight greater than 0",
+  "customPortionWeightTooLarge": "Weight seems unrealistically high",
+  "customPortionOwnLabel": "Your serving",
+  "customPortionDeleteTitle": "Delete serving?",
+  "customPortionDeleteBody": "\"{label}\" will no longer be offered for this food. Entries you already logged keep their amounts.",
+  "@customPortionDeleteBody": {"placeholders": {"label": {"type": "String"}}}
 }

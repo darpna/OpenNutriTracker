@@ -5,7 +5,10 @@ import 'package:archive/archive.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:opennutritracker/core/data/data_source/custom_activity_template_dbo.dart';
 import 'package:opennutritracker/core/data/data_source/user_activity_dbo.dart';
+import 'package:opennutritracker/core/data/dbo/custom_portion_dbo.dart';
 import 'package:opennutritracker/core/data/dbo/favourite_meal_dbo.dart';
+import 'package:opennutritracker/features/custom_portion/domain/repository/custom_portion_repository.dart';
+import 'package:opennutritracker/features/settings/domain/usecase/export_data_usecase.dart';
 import 'package:opennutritracker/core/data/dbo/intake_dbo.dart';
 import 'package:opennutritracker/core/data/dbo/recipe_dbo.dart';
 import 'package:opennutritracker/core/data/dbo/tracked_day_dbo.dart';
@@ -55,6 +58,9 @@ class ImportDataUsecase {
   final ConfigRepository _configRepository;
   final FavouriteMealRepository _favouriteMealRepository;
 
+  /// Null where a test does not import the user's own servings.
+  final CustomPortionRepository? _customPortionRepository;
+
   /// Seam for tests: `FilePicker.pickFile` is static and needs a platform
   /// channel, so the picker outcomes (#1103: cancel, a pick without a
   /// path, a pick of the wrong file) can only be driven from here.
@@ -74,7 +80,9 @@ class ImportDataUsecase {
     this._favouriteMealRepository, {
     PickImportFile pickFile = _pickAnyFile,
     RestoreTrackedDays? restoreTrackedDays,
-  }) : _pickFile = pickFile,
+    CustomPortionRepository? customPortionRepository,
+  }) : _customPortionRepository = customPortionRepository,
+       _pickFile = pickFile,
        _restoreTrackedDays = restoreTrackedDays;
 
   /// Imports user activity, intake, tracked day, and (optionally) recipe,
@@ -154,6 +162,14 @@ class ImportDataUsecase {
         ? null
         : _decodeJsonList(favouriteFile, FavouriteMealDBO.fromJson);
 
+    // The user's own servings, absent from zips written before they existed.
+    final customPortionFile = archive.findFile(
+      ExportDataUsecase.customPortionJsonFileName,
+    );
+    final customPortionDBOs = customPortionFile == null
+        ? null
+        : _decodeJsonList(customPortionFile, CustomPortionDBO.fromJson);
+
     // The profile's goal settings (#1363), absent from zips written before
     // they were exported. Checked here with everything else, so a bad
     // value rejects the zip before any of the writes below.
@@ -194,6 +210,10 @@ class ImportDataUsecase {
       if (favouriteDBOs != null) {
         // Upsert by identity while retaining favourites not in this backup.
         await _favouriteMealRepository.addAllFavouriteDBOs(favouriteDBOs);
+      }
+      if (customPortionDBOs != null) {
+        // Upsert by id, retaining servings not in this backup.
+        await _customPortionRepository?.upsertAllDBOs(customPortionDBOs);
       }
       if (goalSettings != null) {
         await _configRepository.setConfigGoalSettings(

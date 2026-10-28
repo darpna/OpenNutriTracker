@@ -71,3 +71,10 @@ List<QuickServingOption> quickServingOptionsFor(
   }
   return options;
 }
+
+/// Whether the sheet should put an "Add serving" chip next to the quick
+/// options: the food has nothing to count it in (no portions, no serving
+/// values), so the user would otherwise type grams every time. A food that
+/// has some still reaches the same action from the unit picker.
+bool offersAddServingChip(MealEntity product) =>
+    product.portions.isEmpty && !product.hasServingValues;

@@ -2,6 +2,7 @@ import 'package:hive_ce/hive.dart';
 import 'package:opennutritracker/core/data/data_source/custom_activity_template_dbo.dart';
 import 'package:opennutritracker/core/data/data_source/user_activity_dbo.dart';
 import 'package:opennutritracker/core/data/dbo/config_dbo.dart';
+import 'package:opennutritracker/core/data/dbo/custom_portion_dbo.dart';
 import 'package:opennutritracker/core/data/dbo/favourite_meal_dbo.dart';
 import 'package:opennutritracker/core/data/dbo/fasting_session_dbo.dart';
 import 'package:opennutritracker/core/data/dbo/intake_dbo.dart';
@@ -29,6 +30,7 @@ class FakeHiveDBProvider extends HiveDBProvider {
   final Box<MealDBO>? _cachedOffMealBox;
   final Box<RecipeDBO>? _recipeBox;
   final Box<CustomActivityTemplateDBO>? _customActivityTemplateBox;
+  final Box<CustomPortionDBO>? _customPortionBox;
   final Box<WeightLogDBO>? _weightLogBox;
   final Box<WaterIntakeDBO>? _waterIntakeBox;
   final Box<FastingSessionDBO>? _fastingBox;
@@ -56,6 +58,7 @@ class FakeHiveDBProvider extends HiveDBProvider {
     Box<MealDBO>? cachedOffMealBox,
     Box<RecipeDBO>? recipeBox,
     Box<CustomActivityTemplateDBO>? customActivityTemplateBox,
+    Box<CustomPortionDBO>? customPortionBox,
     Box<WeightLogDBO>? weightLogBox,
     Box<WaterIntakeDBO>? waterIntakeBox,
     Box<FastingSessionDBO>? fastingBox,
@@ -71,6 +74,7 @@ class FakeHiveDBProvider extends HiveDBProvider {
         _cachedOffMealBox = cachedOffMealBox,
         _recipeBox = recipeBox,
         _customActivityTemplateBox = customActivityTemplateBox,
+        _customPortionBox = customPortionBox,
         _weightLogBox = weightLogBox,
         _waterIntakeBox = waterIntakeBox,
         _fastingBox = fastingBox,
@@ -105,6 +109,8 @@ class FakeHiveDBProvider extends HiveDBProvider {
   @override
   Box<CustomActivityTemplateDBO> get customActivityTemplateBox =>
       _require(_customActivityTemplateBox);
+  @override
+  Box<CustomPortionDBO> get customPortionBox => _require(_customPortionBox);
   @override
   Box<WeightLogDBO> get weightLogBox => _require(_weightLogBox);
   @override
