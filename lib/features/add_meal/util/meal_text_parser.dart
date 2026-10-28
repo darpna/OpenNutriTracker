@@ -1,4 +1,5 @@
 import 'package:opennutritracker/core/utils/food_name_validator.dart';
+import 'package:opennutritracker/features/add_meal/domain/ai_per100_estimate.dart';
 
 /// Upper bound for a parsed quantity, matching the manual-entry check in
 /// meal_detail_bottom_sheet.dart.
@@ -34,17 +35,71 @@ class ParsedMealItem {
   /// number. #864.
   final String? portion;
 
+  /// True when [quantity] is a model's guess read off a photograph rather than
+  /// an amount somebody stated. The review row shows it as "estimated" and the
+  /// value stays editable. A caption that states the amount clears it.
+  final bool estimated;
+
+  /// The model's weight guess for the whole amount, in grams, kept beside a
+  /// count or portion so the row can fall back to it when the food that was
+  /// matched has no portion of that name. Null unless [estimated].
+  final double? estimatedGrams;
+
+  /// The model's per-100 g macros for this food, used only when the food
+  /// database has no match good enough. Null on every path but the photo one.
+  final AiPer100Estimate? aiPer100;
+
   const ParsedMealItem({
     required this.query,
     this.quantity,
     this.unit,
     this.portion,
+    this.estimated = false,
+    this.estimatedGrams,
+    this.aiPer100,
   });
+
+  ParsedMealItem copyWith({
+    String? query,
+    double? quantity,
+    String? unit,
+    String? portion,
+    bool? estimated,
+    double? estimatedGrams,
+    AiPer100Estimate? aiPer100,
+    bool clearAmount = false,
+    bool clearAiPer100 = false,
+  }) => ParsedMealItem(
+    query: query ?? this.query,
+    quantity: clearAmount ? null : (quantity ?? this.quantity),
+    unit: clearAmount ? null : (unit ?? this.unit),
+    portion: clearAmount ? null : (portion ?? this.portion),
+    estimated: clearAmount ? false : (estimated ?? this.estimated),
+    estimatedGrams: clearAmount
+        ? null
+        : (estimatedGrams ?? this.estimatedGrams),
+    aiPer100: clearAiPer100 ? null : (aiPer100 ?? this.aiPer100),
+  );
 
   @override
   String toString() =>
       'ParsedMealItem(query: $query, quantity: $quantity, unit: $unit, '
-      'portion: $portion)';
+      'portion: $portion, estimated: $estimated)';
+}
+
+/// A photograph of one composed dish — a wrap, a curry, a burger — as the model
+/// read it: the dish's name and the parts it is made of.
+///
+/// The review screen shows it as one row that expands to [components], and
+/// logging stores it as a recipe, the way the app already stores them.
+class ParsedMealDish {
+  final String name;
+  final List<ParsedMealItem> components;
+
+  const ParsedMealDish({required this.name, required this.components});
+
+  @override
+  String toString() => 'ParsedMealDish(name: $name, components: $components)';
 }
 
 /// One rejected segment, identified by its position in the input.
@@ -135,7 +190,15 @@ class MealTextParseResult {
   final List<ParsedMealItem> items;
   final List<MealTextParseError> errors;
 
-  const MealTextParseResult({required this.items, required this.errors});
+  /// Set only by the photo reader, when the picture is one composed dish.
+  /// [items] then holds whatever else was on the plate.
+  final ParsedMealDish? dish;
+
+  const MealTextParseResult({
+    required this.items,
+    required this.errors,
+    this.dish,
+  });
 
   bool get hasErrors => errors.isNotEmpty;
 }
