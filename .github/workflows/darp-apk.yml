@@ -278,7 +278,15 @@ jobs:
     needs: [test, smoke]
     # PRs skip the build: no signing secrets and no release for unmerged code.
     # smoke_only lets a dispatch exercise the gate without cutting a release.
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && !inputs.smoke_only
+    # !cancelled() is load-bearing: without a status function GitHub prepends an
+    # implicit success(), which fails when any job in the needs chain was
+    # skipped - and `changes` (via smoke) is always skipped on push.
+    if: >-
+      ${{ !cancelled()
+      && needs.test.result == 'success'
+      && needs.smoke.result == 'success'
+      && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && !inputs.smoke_only }}
     runs-on: ubuntu-latest
     permissions:
       # Needed only by the release step (gh release create).
