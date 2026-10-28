@@ -27,13 +27,65 @@ final class MealPhotoContent extends MealContent {
   final String mediaType;
   final String base64Data;
 
-  const MealPhotoContent({required this.mediaType, required this.base64Data});
+  /// What the user typed about the picture ("katsu chicken wrap from a cafe,
+  /// ate half"), or null. Travels with the image as plain text; never logged.
+  final String? caption;
+
+  const MealPhotoContent({
+    required this.mediaType,
+    required this.base64Data,
+    this.caption,
+  });
 }
 
 /// The text part that accompanies a photo. Short on purpose: the system
 /// prompt carries the rules, and this only has to say what the picture is
 /// for.
 const mealPhotoContentPrompt = 'List the foods in this photo.';
+
+/// Longest caption sent, in characters. A caption is a line of context, not a
+/// document; the field is bounded the same way on screen.
+const mealPhotoCaptionMaxChars = 300;
+
+/// The text part for [content]: [mealPhotoContentPrompt], plus the user's
+/// caption when there is one.
+///
+/// One function for all three wire formats so the sentence cannot drift
+/// between providers. The caption is quoted and labelled as the user's words;
+/// the system prompt tells the model to read it as context about the photo,
+/// not as instructions.
+String mealPhotoPromptText(MealPhotoContent content) {
+  final caption = content.caption?.trim();
+  if (caption == null || caption.isEmpty) return mealPhotoContentPrompt;
+  final bounded = caption.length > mealPhotoCaptionMaxChars
+      ? caption.substring(0, mealPhotoCaptionMaxChars)
+      : caption;
+  return '$mealPhotoContentPrompt\nThe user says about it: "$bounded"';
+}
+
+/// One forced tool: its name, what it is for, the schema it is held to and the
+/// answer budget. The clients render it; they do not choose it.
+class MealToolSpec {
+  final String name;
+  final String description;
+  final Map<String, Object?> schema;
+  final int maxTokens;
+
+  const MealToolSpec({
+    required this.name,
+    required this.description,
+    required this.schema,
+    required this.maxTokens,
+  });
+}
+
+/// The spec every typed-meal and legacy-photo call uses.
+const mealItemsToolSpec = MealToolSpec(
+  name: mealItemsToolName,
+  description: mealItemsToolDescription,
+  schema: mealItemsToolSchema,
+  maxTokens: 1024,
+);
 
 const mealItemsToolName = 'log_meal_items';
 
@@ -225,6 +277,23 @@ abstract interface class MealItemsApi {
   /// wrong key from a rate limit from an image nothing can serve.
   Future<MealTextParseResult> requestItems({
     required MealContent content,
+    required String system,
+  });
+}
+
+/// The second forced tool, for photographs: a dish with its parts, estimated
+/// amounts and per-100 g macros (see `mealPhotoToolSpec`).
+///
+/// A separate interface rather than a new method on [MealItemsApi], so a
+/// client or a test double that only knows the first tool keeps compiling and
+/// the photo interpreter falls back to it — the same degrade-to-today path it
+/// takes when a reply fails validation.
+///
+/// Returns the tool's raw input and nothing else. Validation lives in
+/// `mealPhotoResultFromJson`, once, above the providers.
+abstract interface class MealPhotoToolApi {
+  Future<Object?> requestPhotoToolInput({
+    required MealPhotoContent content,
     required String system,
   });
 }

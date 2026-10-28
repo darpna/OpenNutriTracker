@@ -59,11 +59,30 @@ String toolReply(List<Map<String, dynamic>> items) => jsonEncode({
   ],
 });
 
+/// A client that only knows the first tool. The interpreter offers the photo
+/// tool to a client that can carry it and falls back to this reading when it
+/// cannot (or when the reply is unusable), so everything below that pins the
+/// counts-only rules runs against exactly this. The estimate reading has its
+/// own suite, `model_meal_photo_estimates_test.dart`.
+class _ItemsOnlyApi implements MealItemsApi {
+  final MealItemsApi _inner;
+
+  _ItemsOnlyApi(this._inner);
+
+  @override
+  Future<MealTextParseResult> requestItems({
+    required MealContent content,
+    required String system,
+  }) => _inner.requestItems(content: content, system: system);
+}
+
 ModelMealPhotoInterpreter interpreterWith(
   http.Client client, {
   Duration timeout = AnthropicMealItemsApi.defaultTimeout,
 }) => ModelMealPhotoInterpreter(
-  AnthropicMealItemsApi(client, () => 'test-key', timeout: timeout),
+  _ItemsOnlyApi(
+    AnthropicMealItemsApi(client, () => 'test-key', timeout: timeout),
+  ),
 );
 
 final _photo = MealPhoto(

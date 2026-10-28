@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:opennutritracker/core/utils/ai_credential_storage.dart';
 import 'package:opennutritracker/features/add_meal/data/meal_items_api_factory.dart';
 import 'package:opennutritracker/features/add_meal/domain/meal_items_api.dart';
+import 'package:opennutritracker/features/add_meal/domain/meal_photo_reply.dart';
 import 'package:opennutritracker/features/add_meal/domain/meal_photo_interpreter.dart';
 import 'package:opennutritracker/features/add_meal/domain/usecase/probe_ai_endpoint_usecase.dart';
 import 'package:opennutritracker/features/add_meal/util/meal_photo_encoder.dart';
@@ -38,10 +39,50 @@ http.StreamedResponse Function(http.BaseRequest) _reply(
   int status = 200,
 }) =>
     (request) => http.StreamedResponse(
-      Stream.value(utf8.encode(body)),
+      Stream.value(utf8.encode(status == 200 ? _forTool(body, request) : body)),
       status,
       request: request,
     );
+
+/// A server answers the tool it was asked to call. The photo leg asks for the
+/// photo tool, so a scripted items reply is re-addressed to it, each item given
+/// the estimate a model would add; the text leg is left exactly as scripted.
+String _forTool(String body, http.BaseRequest request) {
+  final sent = jsonDecode((request as http.Request).body) as Map;
+  final tools = sent['tools'];
+  Object? asked;
+  if (tools is List && tools.isNotEmpty) {
+    final function = (tools.first as Map)['function'];
+    asked = function is Map ? function['name'] : null;
+  }
+  if (asked != mealPhotoToolName) return body;
+  try {
+    final decoded = jsonDecode(body) as Map;
+    final call = ((decoded['choices'] as List).first['message']['tool_calls']
+        as List).first['function'] as Map;
+    if (call['name'] != mealItemsToolName) return body;
+    final items = (jsonDecode(call['arguments'] as String) as Map)['items'];
+    call['name'] = mealPhotoToolName;
+    call['arguments'] = jsonEncode({
+      'items': [
+        for (final item in items as List)
+          {
+            ...(item as Map),
+            'grams': 100,
+            'per_100g': {
+              'kcal': 100,
+              'protein_g': 5,
+              'carbs_g': 10,
+              'fat_g': 3,
+            },
+          },
+      ],
+    });
+    return jsonEncode(decoded);
+  } catch (_) {
+    return body;
+  }
+}
 
 http.StreamedResponse Function(http.BaseRequest) _throws(Object error) =>
     (request) => throw error;

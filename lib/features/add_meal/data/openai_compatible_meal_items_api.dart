@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:logging/logging.dart';
 import 'package:opennutritracker/core/utils/plaintext_destination_guard.dart';
 import 'package:opennutritracker/features/add_meal/domain/meal_items_api.dart';
+import 'package:opennutritracker/features/add_meal/domain/meal_photo_reply.dart';
 import 'package:opennutritracker/features/add_meal/util/meal_text_parser.dart';
 
 /// Asks a model for food items through OpenRouter, which brokers the request
@@ -76,14 +77,12 @@ class OpenRouterBroker {
 ///
 /// That is the opposite of the split from [AnthropicMealItemsApi], which
 /// exists because those two agree on nothing about shape.
-class OpenAiCompatibleMealItemsApi implements MealItemsApi {
+class OpenAiCompatibleMealItemsApi implements MealItemsApi, MealPhotoToolApi {
   static final _log = Logger('OpenAiCompatibleMealItemsApi');
 
   static final openRouterEndpoint = Uri.parse(
     'https://openrouter.ai/api/v1/chat/completions',
   );
-
-  static const _maxTokens = 1024;
 
   static const defaultTimeout = Duration(seconds: 20);
 
@@ -166,9 +165,30 @@ class OpenAiCompatibleMealItemsApi implements MealItemsApi {
     required MealContent content,
     required String system,
   }) async {
+    final input = await _callTool(mealItemsToolSpec, content, system);
+    return validateParsedMealItems(
+      mealItemsFromJson(input is Map ? input['items'] : null),
+      // Only the typed path corroborates: a photograph states no units at
+      // all, and its own counts-only filter already drops them.
+      statedIn: content is MealTextContent ? content.text : null,
+    );
+  }
+
+  /// The photo tool's raw input; `mealPhotoResultFromJson` validates it.
+  @override
+  Future<Object?> requestPhotoToolInput({
+    required MealPhotoContent content,
+    required String system,
+  }) => _callTool(mealPhotoToolSpec, content, system);
+
+  Future<Object?> _callTool(
+    MealToolSpec spec,
+    MealContent content,
+    String system,
+  ) async {
     final body = jsonEncode({
       'model': model,
-      'max_tokens': _maxTokens,
+      'max_tokens': spec.maxTokens,
       // No top-level `system` field here: the OpenAI-compatible shape wants
       // it as the first message.
       'messages': [
@@ -179,9 +199,9 @@ class OpenAiCompatibleMealItemsApi implements MealItemsApi {
         {
           'type': 'function',
           'function': {
-            'name': mealItemsToolName,
-            'description': mealItemsToolDescription,
-            'parameters': mealItemsToolSchema,
+            'name': spec.name,
+            'description': spec.description,
+            'parameters': spec.schema,
             // **No `strict: true`.** It looks like free rigour and is not.
             //
             // OpenAI's strict mode requires every key in `properties` to
@@ -220,33 +240,34 @@ class OpenAiCompatibleMealItemsApi implements MealItemsApi {
       if (toolChoice == ToolChoiceMode.namedFunction)
         'tool_choice': {
           'type': 'function',
-          'function': {'name': mealItemsToolName},
+          'function': {'name': spec.name},
         }
       else if (toolChoice == ToolChoiceMode.anyTool)
         'tool_choice': 'required',
-      if (broker != null) 'provider': {
-        // Without this, OpenRouter documents that a provider which does not
-        // support a parameter still receives the request and ignores it —
-        // and `tool_choice` is not in the set it steers by. A dropped
-        // `tool_choice` means a prose answer this client cannot read, which
-        // would surface as "malformed response" rather than as the
-        // capability problem it is. With it, an unfit provider is refused up
-        // front with a 404 the user can be told about.
-        'require_parameters': true,
-        // Routing default is `allow`, meaning providers that store input
-        // non-transiently and may train on it are eligible. The app cannot
-        // promise a destination's behaviour it never asked for.
-        //
-        // Enforced here as a policy field rather than by reading the slug:
-        // free *usage* triggers the training clauses, not the `:free`
-        // suffix, so slug inspection would be a check that looks like one
-        // and is not.
-        'data_collection': 'deny',
-        if (broker?.providers case final only?) ...{
-          'only': only,
-          'allow_fallbacks': false,
+      if (broker != null)
+        'provider': {
+          // Without this, OpenRouter documents that a provider which does not
+          // support a parameter still receives the request and ignores it —
+          // and `tool_choice` is not in the set it steers by. A dropped
+          // `tool_choice` means a prose answer this client cannot read, which
+          // would surface as "malformed response" rather than as the
+          // capability problem it is. With it, an unfit provider is refused up
+          // front with a 404 the user can be told about.
+          'require_parameters': true,
+          // Routing default is `allow`, meaning providers that store input
+          // non-transiently and may train on it are eligible. The app cannot
+          // promise a destination's behaviour it never asked for.
+          //
+          // Enforced here as a policy field rather than by reading the slug:
+          // free *usage* triggers the training clauses, not the `:free`
+          // suffix, so slug inspection would be a check that looks like one
+          // and is not.
+          'data_collection': 'deny',
+          if (broker?.providers case final only?) ...{
+            'only': only,
+            'allow_fallbacks': false,
+          },
         },
-      },
     });
 
     final http.Response response;
@@ -314,17 +335,12 @@ class OpenAiCompatibleMealItemsApi implements MealItemsApi {
     try {
       decoded = jsonDecode(response.body) as Map<String, dynamic>;
     } catch (_) {
-      throw const MealInterpreterException('malformed response');
+      throw const MealInterpreterException.badReply('malformed response');
     }
 
     _warnIfThePinDidNotHold(decoded);
 
-    return validateParsedMealItems(
-      _itemsFrom(decoded),
-      // Only the typed path corroborates: a photograph states no units at
-      // all, and its own counts-only filter already drops them.
-      statedIn: content is MealTextContent ? content.text : null,
-    );
+    return _toolInputFrom(decoded, spec.name);
   }
 
   /// Checks that the provider named in the app is the one that answered.
@@ -370,11 +386,13 @@ class OpenAiCompatibleMealItemsApi implements MealItemsApi {
   /// sends, which is the clearest single reason these are two classes.
   Object _contentJson(MealContent content) => switch (content) {
     MealTextContent(:final text) => text,
-    MealPhotoContent(:final mediaType, :final base64Data) => [
-      {'type': 'text', 'text': mealPhotoContentPrompt},
+    final MealPhotoContent photo => [
+      {'type': 'text', 'text': mealPhotoPromptText(photo)},
       {
         'type': 'image_url',
-        'image_url': {'url': 'data:$mediaType;base64,$base64Data'},
+        'image_url': {
+          'url': 'data:${photo.mediaType};base64,${photo.base64Data}',
+        },
       },
     ],
   };
@@ -386,15 +404,15 @@ class OpenAiCompatibleMealItemsApi implements MealItemsApi {
   /// `finish_reason: "error"` and the real status inside the choice, so the
   /// status line alone cannot be trusted. And `arguments` is a JSON string
   /// rather than an object, so it is decoded a second time.
-  List<ParsedMealItem> _itemsFrom(Map<String, dynamic> decoded) {
+  Object? _toolInputFrom(Map<String, dynamic> decoded, String toolName) {
     final choices = decoded['choices'];
     if (choices is! List || choices.isEmpty) {
-      throw const MealInterpreterException('response has no choices');
+      throw const MealInterpreterException.badReply('response has no choices');
     }
 
     final choice = choices.first;
     if (choice is! Map) {
-      throw const MealInterpreterException('response has no choices');
+      throw const MealInterpreterException.badReply('response has no choices');
     }
 
     _throwIfFailedGeneration(choice);
@@ -419,9 +437,9 @@ class OpenAiCompatibleMealItemsApi implements MealItemsApi {
       if (call is! Map) continue;
       final function = call['function'];
       if (function is! Map) continue;
-      if (function['name'] != mealItemsToolName) continue;
+      if (function['name'] != toolName) continue;
 
-      return mealItemsFromJson(_argumentsFrom(function['arguments']));
+      return _argumentsFrom(function['arguments']);
     }
 
     throw MealInterpreterException(
@@ -504,14 +522,12 @@ class OpenAiCompatibleMealItemsApi implements MealItemsApi {
       try {
         decoded = jsonDecode(arguments);
       } catch (_) {
-        throw const MealInterpreterException(
-          'tool call has malformed arguments',
-        );
+        throw const MealInterpreterException.badReply('tool call has malformed arguments');
       }
     } else {
       decoded = arguments;
     }
 
-    return decoded is Map ? decoded['items'] : null;
+    return decoded;
   }
 }

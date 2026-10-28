@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:logging/logging.dart';
 import 'package:opennutritracker/features/add_meal/domain/meal_items_api.dart';
+import 'package:opennutritracker/features/add_meal/domain/meal_photo_reply.dart';
 import 'package:opennutritracker/features/add_meal/util/meal_text_parser.dart';
 
 /// Asks Claude directly, over the Messages API, for a list of food items.
@@ -10,7 +11,7 @@ import 'package:opennutritracker/features/add_meal/util/meal_text_parser.dart';
 /// One of two [MealItemsApi] implementations. This one holds nothing but
 /// Anthropic's wire format: the prompts, the counts-only rule and
 /// [mealItemsToolSchema] live above the seam, shared with every provider.
-class AnthropicMealItemsApi implements MealItemsApi {
+class AnthropicMealItemsApi implements MealItemsApi, MealPhotoToolApi {
   static final _log = Logger('AnthropicMealItemsApi');
 
   static const _endpoint = 'https://api.anthropic.com/v1/messages';
@@ -23,10 +24,6 @@ class AnthropicMealItemsApi implements MealItemsApi {
 
   /// The API version header Anthropic requires. Pinned for the same reason.
   static const _apiVersion = '2023-06-01';
-
-  /// Small on purpose. This returns a short list of short strings; a large
-  /// budget only buys a longer runaway before it is cut off.
-  static const _maxTokens = 1024;
 
   /// Matches the other remote data sources in this repo. Without it a
   /// stalled connection hangs until the OS gives up, which means the user
@@ -55,20 +52,46 @@ class AnthropicMealItemsApi implements MealItemsApi {
     required MealContent content,
     required String system,
   }) async {
+    final input = await _callTool(mealItemsToolSpec, content, system);
+    return validateParsedMealItems(
+      mealItemsFromJson(input is Map ? input['items'] : null),
+      // Only the typed path corroborates: a photograph states no units at
+      // all, and its own counts-only filter already drops them.
+      statedIn: content is MealTextContent ? content.text : null,
+    );
+  }
+
+  /// The photo tool's raw input; `mealPhotoResultFromJson` validates it.
+  @override
+  Future<Object?> requestPhotoToolInput({
+    required MealPhotoContent content,
+    required String system,
+  }) => _callTool(mealPhotoToolSpec, content, system);
+
+  /// One forced call to [spec], returning the tool's input untouched.
+  ///
+  /// `max_tokens` is per tool and small on purpose: a list of short strings
+  /// needs little, and a large budget only buys a longer runaway before it is
+  /// cut off. The photo tool carries macros per component and gets more.
+  Future<Object?> _callTool(
+    MealToolSpec spec,
+    MealContent content,
+    String system,
+  ) async {
     final body = jsonEncode({
       'model': model,
-      'max_tokens': _maxTokens,
+      'max_tokens': spec.maxTokens,
       'system': system,
       'tools': [
         {
-          'name': mealItemsToolName,
-          'description': mealItemsToolDescription,
-          'input_schema': mealItemsToolSchema,
+          'name': spec.name,
+          'description': spec.description,
+          'input_schema': spec.schema,
         },
       ],
       // Forcing the tool is what makes the reply parseable. Without it the
       // model may answer in prose and every caller needs a fallback parser.
-      'tool_choice': {'type': 'tool', 'name': mealItemsToolName},
+      'tool_choice': {'type': 'tool', 'name': spec.name},
       'messages': [
         {'role': 'user', 'content': _contentJson(content)},
       ],
@@ -103,12 +126,7 @@ class AnthropicMealItemsApi implements MealItemsApi {
       );
     }
 
-    return validateParsedMealItems(
-      _itemsFrom(response.body),
-      // Only the typed path corroborates: a photograph states no units at
-      // all, and its own counts-only filter already drops them.
-      statedIn: content is MealTextContent ? content.text : null,
-    );
+    return _toolInputFrom(response.body, spec.name);
   }
 
   /// What Anthropic's status codes mean here.
@@ -147,45 +165,46 @@ class AnthropicMealItemsApi implements MealItemsApi {
   /// than on [MealContent].
   Object _contentJson(MealContent content) => switch (content) {
     MealTextContent(:final text) => text,
-    MealPhotoContent(:final mediaType, :final base64Data) => [
+    final MealPhotoContent photo => [
       {
         'type': 'image',
         'source': {
           'type': 'base64',
-          'media_type': mediaType,
-          'data': base64Data,
+          'media_type': photo.mediaType,
+          'data': photo.base64Data,
         },
       },
-      {'type': 'text', 'text': mealPhotoContentPrompt},
+      {'type': 'text', 'text': mealPhotoPromptText(photo)},
     ],
   };
 
   /// Pulls the tool input out of the reply. Every shape that is not the one
   /// expected raises rather than guessing, so a changed API surfaces as a
   /// handled failure instead of silent nonsense.
-  List<ParsedMealItem> _itemsFrom(String responseBody) {
+  Object? _toolInputFrom(String responseBody, String toolName) {
     final Map<String, dynamic> decoded;
     try {
       decoded = jsonDecode(responseBody) as Map<String, dynamic>;
     } catch (_) {
-      throw const MealInterpreterException('malformed response');
+      throw const MealInterpreterException.badReply('malformed response');
     }
 
     final content = decoded['content'];
     if (content is! List) {
-      throw const MealInterpreterException('response has no content');
+      throw const MealInterpreterException.badReply('response has no content');
     }
 
     for (final block in content) {
       if (block is! Map) continue;
       if (block['type'] != 'tool_use') continue;
-      if (block['name'] != mealItemsToolName) continue;
+      if (block['name'] != toolName) continue;
 
-      // Checked rather than cast: a provider returning something other than
-      // an object here would otherwise throw a TypeError straight past the
-      // exception surface the callers rely on.
-      final input = block['input'];
-      return mealItemsFromJson(input is Map ? input['items'] : null);
+      // Returned unchecked: each reader (`mealItemsFromJson`,
+      // `mealPhotoResultFromJson`) checks the shape itself, so a provider
+      // returning something other than an object ends in a handled failure
+      // rather than a TypeError past the exception surface the callers rely
+      // on.
+      return block['input'];
     }
 
     throw MealInterpreterException(
