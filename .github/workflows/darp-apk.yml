@@ -1,0 +1,183 @@
+name: Darp APK
+
+on:
+  push:
+    branches: [darp]
+  pull_request:
+    branches: [darp]
+  workflow_dispatch:
+
+# One run per ref; a newer push supersedes the in-flight one.
+concurrency:
+  group: darp-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Java (Zulu)
+        id: setup_java_zulu
+        uses: actions/setup-java@v6.1.0
+        continue-on-error: true
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      # Azul's CDN intermittently 520s; fall back to Temurin (same as upstream).
+      - name: Setup Java (Temurin fallback)
+        if: steps.setup_java_zulu.outcome == 'failure'
+        uses: actions/setup-java@v6.1.0
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter + cache packages
+        uses: ./.github/actions/setup-flutter-cache
+
+      # Written inline because write-env-file fails on empty values and
+      # SENTRY_DNS is intentionally empty on this fork. `||` also falls back
+      # when the secret exists but is an empty string.
+      - name: Generate .env
+        env:
+          SUPABASE_PROJECT_URL: ${{ secrets.SUPABASE_PROJECT_URL || 'https://placeholder.supabase.co' }}
+          SUPABASE_PROJECT_ANON_KEY: ${{ secrets.SUPABASE_PROJECT_ANON_KEY || 'placeholder' }}
+        run: |
+          cat > .env <<EOF2
+          SENTRY_DNS=""
+          SUPABASE_PROJECT_URL="$SUPABASE_PROJECT_URL"
+          SUPABASE_PROJECT_ANON_KEY="$SUPABASE_PROJECT_ANON_KEY"
+          EOF2
+
+      - name: Install Flutter packages
+        run: flutter pub get
+
+      # env.g.dart and lib/generated are gitignored, so they must be generated.
+      - name: Generate code
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Analyze
+        run: flutter analyze
+
+      # Plain `flutter test` only runs test/; integration_test/ needs a device.
+      - name: Unit + widget tests
+        run: flutter test
+
+  apk:
+    needs: test
+    # PRs skip the build: no signing secrets and no release for unmerged code.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      # Needed only by the release step (gh release create).
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Java (Zulu)
+        id: setup_java_zulu
+        uses: actions/setup-java@v6.1.0
+        continue-on-error: true
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Java (Temurin fallback)
+        if: steps.setup_java_zulu.outcome == 'failure'
+        uses: actions/setup-java@v6.1.0
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter + cache packages
+        uses: ./.github/actions/setup-flutter-cache
+
+      # Same cache key as upstream so both workflows share the Gradle cache.
+      - name: Cache Gradle
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('android/**/*.gradle*', 'android/**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Generate .env
+        env:
+          SUPABASE_PROJECT_URL: ${{ secrets.SUPABASE_PROJECT_URL || 'https://placeholder.supabase.co' }}
+          SUPABASE_PROJECT_ANON_KEY: ${{ secrets.SUPABASE_PROJECT_ANON_KEY || 'placeholder' }}
+        run: |
+          cat > .env <<EOF2
+          SENTRY_DNS=""
+          SUPABASE_PROJECT_URL="$SUPABASE_PROJECT_URL"
+          SUPABASE_PROJECT_ANON_KEY="$SUPABASE_PROJECT_ANON_KEY"
+          EOF2
+
+      # Identical to upstream: build.gradle reads android/key.properties, and
+      # a missing secret must fail here rather than yield an unsigned APK.
+      - name: Restore Android signing material
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          : "${ANDROID_KEYSTORE_BASE64:?Missing ANDROID_KEYSTORE_BASE64 secret}"
+          : "${ANDROID_KEYSTORE_PASSWORD:?Missing ANDROID_KEYSTORE_PASSWORD secret}"
+          : "${ANDROID_KEY_ALIAS:?Missing ANDROID_KEY_ALIAS secret}"
+          : "${ANDROID_KEY_PASSWORD:?Missing ANDROID_KEY_PASSWORD secret}"
+          mkdir -p android/app
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/upload-keystore.jks
+          cat > android/key.properties <<EOF2
+          storePassword=$ANDROID_KEYSTORE_PASSWORD
+          keyPassword=$ANDROID_KEY_PASSWORD
+          keyAlias=$ANDROID_KEY_ALIAS
+          storeFile=../app/upload-keystore.jks
+          EOF2
+
+      - name: Install Flutter packages
+        run: flutter pub get
+
+      - name: Generate code
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      # develop flavor = applicationIdSuffix ".develop", so it installs beside
+      # the store app. The offset keeps versionCode monotonic per run.
+      - name: Build develop APK
+        run: flutter build apk --release --flavor develop --build-number=$((100000 + github.run_number))
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ont-darp-apk
+          path: build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: error
+
+      # A release gives the phone a direct download link. --target pins the
+      # tag to the built commit; a re-run of the same run_number reuses the
+      # release and replaces the asset instead of failing on a duplicate tag.
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: darp-b${{ github.run_number }}
+        run: |
+          apk=build/app/outputs/flutter-apk/app-develop-release.apk
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$apk" --clobber
+          else
+            gh release create "$TAG" "$apk" \
+              --target "$GITHUB_SHA" \
+              --title "Darp build $GITHUB_RUN_NUMBER" \
+              --notes "Sideload build from $GITHUB_SHA" \
+              --latest
+          fi
