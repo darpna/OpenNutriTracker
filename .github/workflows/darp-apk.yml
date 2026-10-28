@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [darp]
   workflow_dispatch:
+    inputs:
+      smoke_only:
+        description: 'Run test + smoke only; skip the APK build and release'
+        type: boolean
+        default: false
 
 # One run per ref; a newer push supersedes the in-flight one.
 concurrency:
@@ -71,10 +76,209 @@ jobs:
       - name: Unit + widget tests
         run: flutter test
 
+  # Decides whether a pull request needs the emulator. A workflow-level `paths:`
+  # filter would also stop `test` on every other PR, so the filter lives here.
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      run: ${{ steps.filter.outputs.run }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Does the PR touch what the smoke test guards?
+        id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          pattern='^(integration_test/|\.github/workflows/darp-apk\.yml$|lib/core/data/|lib/core/utils/locator\.dart$|pubspec\.)'
+          if git diff --name-only "$BASE_SHA...$HEAD_SHA" | grep -E "$pattern"; then
+            echo 'run=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'run=false' >> "$GITHUB_OUTPUT"
+          fi
+
+  # Boots the develop flavor on a real Android emulator before an APK is built
+  # and sideloaded. Gated only on offline, deterministic checks (start over
+  # existing data, log a meal, export/import round trip); the food-search
+  # probe inside it is report-only. See integration_test/darp_smoke_test.dart.
+  smoke:
+    needs: [test, changes]
+    # Always on push/dispatch; on a PR only when it touches storage, startup or
+    # the smoke test itself (see `changes`), so unrelated PRs skip the emulator.
+    if: >-
+      ${{ !cancelled() && needs.test.result == 'success'
+      && (github.event_name != 'pull_request' || needs.changes.outputs.run == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # The runner has ~14 GB free; the API 34 system image plus an emulator
+      # boot can tip it over, which surfaces as the misleading "could not
+      # connect to TCP port 5554". Drop toolchains this job never uses.
+      - name: Free up disk space for the emulator
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /usr/local/share/boost /usr/share/swift /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+          df -h /
+
+      - name: Setup Java (Zulu)
+        id: setup_java_zulu
+        uses: actions/setup-java@v6.1.0
+        continue-on-error: true
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Java (Temurin fallback)
+        if: steps.setup_java_zulu.outcome == 'failure'
+        uses: actions/setup-java@v6.1.0
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter + cache packages
+        uses: ./.github/actions/setup-flutter-cache
+
+      - name: Cache Gradle
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('android/**/*.gradle*', 'android/**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      # Keyed on API level, arch and image target so changing any of them
+      # starts from a fresh AVD instead of a stale snapshot.
+      - name: Cache AVD
+        uses: actions/cache@v6
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-smoke-api34-x86_64-google_apis
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Generate .env
+        env:
+          SUPABASE_PROJECT_URL: ${{ secrets.SUPABASE_PROJECT_URL || 'https://placeholder.supabase.co' }}
+          SUPABASE_PROJECT_ANON_KEY: ${{ secrets.SUPABASE_PROJECT_ANON_KEY || 'placeholder' }}
+        run: |
+          cat > .env <<EOF2
+          SENTRY_DNS=""
+          SUPABASE_PROJECT_URL="$SUPABASE_PROJECT_URL"
+          SUPABASE_PROJECT_ANON_KEY="$SUPABASE_PROJECT_ANON_KEY"
+          EOF2
+
+      - name: Install Flutter packages
+        run: flutter pub get
+
+      - name: Generate code
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      # Cache miss only: boot once to seed the snapshot, then exit, so the
+      # test attempts below start from a warm AVD.
+      - name: Generate AVD snapshot (cache miss only)
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          script: echo "AVD snapshot generated for cache"
+
+      # Attempt 1 is allowed to fail so a flaky emulator boot (it dies on
+      # "could not connect to TCP port 5554", outside the script) gets one
+      # retry on a fresh boot. A real break fails both attempts.
+      - name: Smoke test (attempt 1)
+        id: smoke1
+        continue-on-error: true
+        timeout-minutes: 13
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: bash integration_test/darp_smoke_run.sh 1
+
+      # Only when the test never got to report a gate (emulator or build
+      # failure). A failed gate is deterministic: rerunning it costs ten
+      # minutes and proves nothing.
+      - name: Smoke test (retry once)
+        id: smoke2
+        if: steps.smoke1.outcome == 'failure' && hashFiles('smoke-ran-1') == ''
+        timeout-minutes: 10
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: bash integration_test/darp_smoke_run.sh 2
+
+      # continue-on-error hides attempt 1's failure from the job; surface it
+      # unless the retry ran and passed.
+      - name: Fail the job if smoke failed
+        if: steps.smoke1.outcome == 'failure' && steps.smoke2.outcome != 'success'
+        run: |
+          echo '::error::darp smoke failed; see the RESULT lines and the smoke-logs artifact'
+          exit 1
+
+      - name: Write RESULT lines to the job summary
+        if: always()
+        run: |
+          {
+            echo '### Darp smoke'
+            for n in 1 2; do
+              [ -f "smoke-results-$n.txt" ] || continue
+              echo "**attempt $n**"
+              echo '```'
+              cat "smoke-results-$n.txt"
+              echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload smoke logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-logs
+          path: smoke-*.log
+          if-no-files-found: ignore
+
   apk:
-    needs: test
+    needs: [test, smoke]
     # PRs skip the build: no signing secrets and no release for unmerged code.
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # smoke_only lets a dispatch exercise the gate without cutting a release.
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && !inputs.smoke_only
     runs-on: ubuntu-latest
     permissions:
       # Needed only by the release step (gh release create).
@@ -151,28 +355,52 @@ jobs:
       - name: Generate code
         run: dart run build_runner build --delete-conflicting-outputs
 
+      # Names the build so downloads are tellable apart: the in-app version
+      # reads <pubspec name>+darp.b<run>-develop (the flavor's existing
+      # versionNameSuffix), the file reads ONT-darp-b<run>-<date>-<sha>.apk.
+      - name: Compute build identity
+        run: |
+          pubspec_name=$(sed -n 's/^version: *\([^+ ]*\).*/\1/p' pubspec.yaml | head -n1)
+          : "${pubspec_name:?could not read version from pubspec.yaml}"
+          {
+            echo "BUILD_NAME=${pubspec_name}+darp.b${GITHUB_RUN_NUMBER}"
+            echo "APK_NAME=ONT-darp-b${GITHUB_RUN_NUMBER}-$(date -u +%Y%m%d)-${GITHUB_SHA::7}.apk"
+          } >> "$GITHUB_ENV"
+
       # develop flavor = applicationIdSuffix ".develop", so it installs beside
       # the store app. The offset keeps versionCode monotonic per run.
       - name: Build develop APK
-        run: flutter build apk --release --flavor develop --build-number=$((100000 + GITHUB_RUN_NUMBER))
+        run: flutter build apk --release --flavor develop --build-name="$BUILD_NAME" --build-number=$((100000 + GITHUB_RUN_NUMBER))
+
+      # One renamed file in its own directory, so it is the only thing
+      # uploaded anywhere.
+      - name: Rename APK
+        run: |
+          mkdir -p dist
+          cp build/app/outputs/flutter-apk/app-develop-release.apk "dist/$APK_NAME"
+          ls -l dist
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v7
         with:
           name: ont-darp-apk
-          path: build/app/outputs/flutter-apk/*.apk
+          path: dist/*.apk
           if-no-files-found: error
 
       # A release gives the phone a direct download link. --target pins the
       # tag to the built commit; a re-run of the same run_number reuses the
-      # release and replaces the asset instead of failing on a duplicate tag.
+      # release and swaps its asset (old ones deleted first, since the name
+      # carries a date and would not be overwritten) instead of failing on a
+      # duplicate tag.
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: darp-b${{ github.run_number }}
         run: |
-          apk=build/app/outputs/flutter-apk/app-develop-release.apk
+          apk="dist/$APK_NAME"
           if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release view "$TAG" --json assets --jq '.assets[].name' |
+              while read -r old; do gh release delete-asset "$TAG" "$old" --yes; done
             gh release upload "$TAG" "$apk" --clobber
           else
             gh release create "$TAG" "$apk" \
