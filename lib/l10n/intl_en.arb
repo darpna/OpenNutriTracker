@@ -1400,6 +1400,7 @@
   "bulkAddPhotoUnavailableLabel": "Turn on AI meal assistance in Settings to read photos",
   "bulkAddPhotoKeyRejectedLabel": "Your API key was rejected. Check it in Settings.",
   "bulkAddPhotoCameraFailedLabel": "Couldn't open the camera. Check camera permission and try again.",
+  "bulkAddPhotoGalleryFailedLabel": "Couldn't open your photos. Check photo access permission and try again.",
   "bulkAddPhotoFailedLabel": "Couldn't read the photo. Check your connection and try again.",
   "bulkAddPhotoUnreadableLabel": "Couldn't use that image. Try another photo.",
   "bulkAddPhotoUnsupportedLabel": "That model can't read photos. Choose a different one in Settings, or type the items instead.",

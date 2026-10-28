@@ -1,6 +1,7 @@
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -265,6 +266,7 @@ bool _offersSettings(BulkAddPhotoError error) => switch (error) {
   BulkAddPhotoError.insecureDestination => true,
   BulkAddPhotoError.transient ||
   BulkAddPhotoError.camera ||
+  BulkAddPhotoError.gallery ||
   BulkAddPhotoError.unreadable ||
   BulkAddPhotoError.billing => false,
 };
@@ -1299,6 +1301,59 @@ void main() {
       find.textContaining(l10nEn.bulkAddPhotoDisclosureCommon),
       findsOneWidget,
     );
+  });
+
+  testWidgets('the photo sheet offers the gallery and picks from it', (
+    tester,
+  ) async {
+    // He usually has the photo already; the sheet used to open the camera
+    // and nothing else. The picker is stubbed at its method channel, which
+    // is the boundary `ImagePicker` talks across.
+    final sources = <int>[];
+    const channel = MethodChannel('plugins.flutter.io/image_picker');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          if (call.method == 'pickImage') {
+            sources.add((call.arguments as Map)['source'] as int);
+          }
+          // A cancelled pick: the screen must stay silent.
+          return null;
+        });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null),
+    );
+
+    await _register(const {});
+    getIt.unregister<AiCredentialStorage>();
+    getIt.registerLazySingleton<AiCredentialStorage>(
+      () => AiCredentialStorage(
+        _MapStorage({
+          'AiApiKeyTag.openrouter': 'sk-or-test',
+          'AiAssistEnabledTag': 'true',
+          'AiProviderTag': 'openrouter',
+        }),
+      ),
+    );
+
+    await tester.pumpWidget(_app());
+    await tester.pumpAndSettle();
+    final navigator = tester.state<NavigatorState>(find.byType(Navigator));
+    navigator.pushNamed('/bulk');
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.photo_camera_rounded).first);
+    await tester.pumpAndSettle();
+
+    expect(find.text(l10nEn.mealImageTakePhoto), findsOneWidget);
+    expect(find.text(l10nEn.mealImagePickFromGallery), findsOneWidget);
+
+    await tester.tap(find.text(l10nEn.mealImagePickFromGallery));
+    await tester.pumpAndSettle();
+
+    expect(sources, [ImageSource.gallery.index]);
+    expect(find.text(l10nEn.bulkAddPhotoGalleryFailedLabel), findsNothing);
+    expect(find.text(l10nEn.bulkAddPhotoUnreadableLabel), findsNothing);
   });
 
   testWidgets('a photo with no food says so, not "nothing to log yet"', (
