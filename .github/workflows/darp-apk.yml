@@ -154,7 +154,7 @@ jobs:
       # develop flavor = applicationIdSuffix ".develop", so it installs beside
       # the store app. The offset keeps versionCode monotonic per run.
       - name: Build develop APK
-        run: flutter build apk --release --flavor develop --build-number=$((100000 + github.run_number))
+        run: flutter build apk --release --flavor develop --build-number=$((100000 + GITHUB_RUN_NUMBER))
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v7
