@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [darp]
   workflow_dispatch:
+    inputs:
+      smoke_only:
+        description: 'Run test + smoke only; skip the APK build and release'
+        type: boolean
+        default: false
 
 # One run per ref; a newer push supersedes the in-flight one.
 concurrency:
@@ -71,10 +76,166 @@ jobs:
       - name: Unit + widget tests
         run: flutter test
 
-  apk:
+  # Boots the develop flavor on a real Android emulator before an APK is built
+  # and sideloaded. Gated only on offline, deterministic checks (start over
+  # existing data, log a meal, export/import round trip); the food-search
+  # probe inside it is report-only. See integration_test/darp_smoke_test.dart.
+  smoke:
     needs: test
-    # PRs skip the build: no signing secrets and no release for unmerged code.
+    # Emulator minutes are not spent on PRs; the push to darp is the gate.
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # The runner has ~14 GB free; the API 34 system image plus an emulator
+      # boot can tip it over, which surfaces as the misleading "could not
+      # connect to TCP port 5554". Drop toolchains this job never uses.
+      - name: Free up disk space for the emulator
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /usr/local/share/boost /usr/share/swift /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+          df -h /
+
+      - name: Setup Java (Zulu)
+        id: setup_java_zulu
+        uses: actions/setup-java@v6.1.0
+        continue-on-error: true
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Java (Temurin fallback)
+        if: steps.setup_java_zulu.outcome == 'failure'
+        uses: actions/setup-java@v6.1.0
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter + cache packages
+        uses: ./.github/actions/setup-flutter-cache
+
+      - name: Cache Gradle
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('android/**/*.gradle*', 'android/**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      # Keyed on API level, arch and image target so changing any of them
+      # starts from a fresh AVD instead of a stale snapshot.
+      - name: Cache AVD
+        uses: actions/cache@v6
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-smoke-api34-x86_64-google_apis
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Generate .env
+        env:
+          SUPABASE_PROJECT_URL: ${{ secrets.SUPABASE_PROJECT_URL || 'https://placeholder.supabase.co' }}
+          SUPABASE_PROJECT_ANON_KEY: ${{ secrets.SUPABASE_PROJECT_ANON_KEY || 'placeholder' }}
+        run: |
+          cat > .env <<EOF2
+          SENTRY_DNS=""
+          SUPABASE_PROJECT_URL="$SUPABASE_PROJECT_URL"
+          SUPABASE_PROJECT_ANON_KEY="$SUPABASE_PROJECT_ANON_KEY"
+          EOF2
+
+      - name: Install Flutter packages
+        run: flutter pub get
+
+      - name: Generate code
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      # Cache miss only: boot once to seed the snapshot, then exit, so the
+      # test attempts below start from a warm AVD.
+      - name: Generate AVD snapshot (cache miss only)
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          script: echo "AVD snapshot generated for cache"
+
+      # Attempt 1 is allowed to fail so a flaky emulator boot (it dies on
+      # "could not connect to TCP port 5554", outside the script) gets one
+      # retry on a fresh boot. A real break fails both attempts.
+      - name: Smoke test (attempt 1)
+        id: smoke1
+        continue-on-error: true
+        timeout-minutes: 13
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: bash integration_test/darp_smoke_run.sh 1
+
+      - name: Smoke test (retry once)
+        if: steps.smoke1.outcome == 'failure'
+        timeout-minutes: 10
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: bash integration_test/darp_smoke_run.sh 2
+
+      - name: Write RESULT lines to the job summary
+        if: always()
+        run: |
+          {
+            echo '### Darp smoke'
+            for n in 1 2; do
+              [ -f "smoke-results-$n.txt" ] || continue
+              echo "**attempt $n**"
+              echo '```'
+              cat "smoke-results-$n.txt"
+              echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload smoke logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-logs
+          path: smoke-*.log
+          if-no-files-found: ignore
+
+  apk:
+    needs: [test, smoke]
+    # PRs skip the build: no signing secrets and no release for unmerged code.
+    # smoke_only lets a dispatch exercise the gate without cutting a release.
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && !inputs.smoke_only
     runs-on: ubuntu-latest
     permissions:
       # Needed only by the release step (gh release create).
