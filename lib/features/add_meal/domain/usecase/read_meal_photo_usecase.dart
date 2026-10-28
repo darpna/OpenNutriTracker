@@ -93,6 +93,7 @@ class ReadMealPhotoUseCase {
   Future<MealPhotoReadResult> read(
     MealPhoto photo, {
     String? localeCode,
+    String? caption,
   }) async {
     final selection = await _credentials.readSelection();
     if (selection == null) {
@@ -102,7 +103,12 @@ class ReadMealPhotoUseCase {
     try {
       final result = await _interpreterFactory(
         selection,
-      ).interpret(photo, localeCode: localeCode);
+      ).interpret(photo, localeCode: localeCode, caption: caption);
+      // The one switch on the model's nutrition figures: with the fallback
+      // off they are dropped here, before anything downstream can see them.
+      if (!await _credentials.isEstimateFallbackEnabled()) {
+        return MealPhotoRead(withoutAiEstimates(result));
+      }
       return MealPhotoRead(result);
     } on MealInterpreterException catch (e) {
       _log.info('Photo interpreter failed: ${e.reason}');
@@ -188,4 +194,22 @@ class ReadMealPhotoUseCase {
       _log.severe('Could not retract the photo pass', e, stackTrace);
     }
   }
+}
+
+/// [result] with every model-supplied macro removed, estimates and dish
+/// grouping kept.
+MealTextParseResult withoutAiEstimates(MealTextParseResult result) {
+  ParsedMealItem strip(ParsedMealItem item) =>
+      item.copyWith(clearAiPer100: true);
+  final dish = result.dish;
+  return MealTextParseResult(
+    items: result.items.map(strip).toList(),
+    errors: result.errors,
+    dish: dish == null
+        ? null
+        : ParsedMealDish(
+            name: dish.name,
+            components: dish.components.map(strip).toList(),
+          ),
+  );
 }

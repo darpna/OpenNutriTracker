@@ -7,6 +7,7 @@ import 'package:opennutritracker/features/add_meal/domain/meal_photo_interpreter
 import 'package:opennutritracker/features/add_meal/domain/meal_text_interpreter.dart';
 import 'package:opennutritracker/features/add_meal/domain/usecase/read_meal_photo_usecase.dart';
 import 'package:opennutritracker/features/add_meal/domain/usecase/read_meal_text_usecase.dart';
+import 'package:opennutritracker/features/add_meal/domain/ai_per100_estimate.dart';
 import 'package:opennutritracker/features/add_meal/domain/entity/meal_entity.dart';
 import 'package:opennutritracker/features/add_meal/domain/entity/meal_nutriments_entity.dart';
 import 'package:opennutritracker/features/add_meal/domain/entity/meal_portion_entity.dart';
@@ -781,6 +782,290 @@ void main() {
 
     expect(state.rows, isEmpty);
     expect(state.parseErrors, hasLength(1));
+  });
+
+  group('reading a photo as a dish', () {
+    const macros = AiPer100Estimate(
+      kcal: 250,
+      proteinG: 12,
+      carbsG: 20,
+      fatG: 13,
+    );
+
+    ParsedMealItem estimate(String query, double grams) => ParsedMealItem(
+      query: query,
+      quantity: grams,
+      unit: 'g',
+      estimated: true,
+      estimatedGrams: grams,
+      aiPer100: macros,
+    );
+
+    MealPhotoRead wrap({
+      List<ParsedMealItem> items = const [],
+      List<ParsedMealItem>? components,
+    }) => MealPhotoRead(
+      MealTextParseResult(
+        items: items,
+        errors: const [],
+        dish: ParsedMealDish(
+          name: 'Katsu chicken wrap',
+          components:
+              components ??
+              [
+                estimate('flour tortilla', 70),
+                estimate('breaded fried chicken', 120),
+                estimate('lettuce', 20),
+              ],
+        ),
+      ),
+    );
+
+    Future<BulkAddLoadedState> read(
+      Map<String, List<MealEntity>> db,
+      MealPhotoRead reading, {
+      _StubPhotoReader? reader,
+    }) async {
+      final bloc = blocWith(
+        db,
+        photoReader: reader ?? _StubPhotoReader(reading),
+      );
+      bloc.add(
+        ReadMealPhotoEvent(
+          photo: _photo,
+          usesImperialUnits: false,
+          caption: 'katsu chicken wrap',
+        ),
+      );
+      return await bloc.stream.firstWhere((s) => s is BulkAddLoadedState)
+          as BulkAddLoadedState;
+    }
+
+    test('the dish is one item over its component rows', () async {
+      final state = await read(const {}, wrap());
+
+      expect(state.dish!.name, 'Katsu chicken wrap');
+      expect(state.dish!.componentCount, 3);
+      expect(state.dishRows, hasLength(3));
+      expect(state.plateRows, isEmpty);
+      expect(state.loggableCount, 1, reason: 'one dish, however many parts');
+    });
+
+    test('separate foods follow the dish and count on their own', () async {
+      final state = await read(
+        const {},
+        wrap(items: [estimate('fries', 150)]),
+      );
+
+      expect(state.rows.map((r) => r.parsed.query), [
+        'flour tortilla',
+        'breaded fried chicken',
+        'lettuce',
+        'fries',
+      ]);
+      expect(state.plateRows.single.parsed.query, 'fries');
+      expect(state.loggableCount, 2);
+    });
+
+    test('with nothing in the database every part is an AI estimate', () async {
+      final state = await read(const {}, wrap());
+
+      for (final row in state.rows) {
+        expect(row.isResolved, isTrue);
+        expect(row.usesAiEstimate, isTrue);
+        expect(row.isEstimated, isTrue);
+        expect(row.unit, 'g');
+        expect(row.willBeLogged, isTrue);
+      }
+      expect(state.rows[1].amountText, '120');
+      expect(state.rows[1].meal!.nutriments.energyKcal100, 250);
+      // The dish row's own numbers are sums over the parts.
+      expect(state.dishWeightG, 210);
+      expect(state.dishKcal, closeTo(210 * 2.5, 1e-9));
+    });
+
+    test('a good database match keeps its numbers and the estimated amount', () async {
+      final lettuce = MealEntity(
+        code: 'lettuce',
+        name: 'Lettuce',
+        url: null,
+        mealQuantity: null,
+        mealUnit: 'g',
+        servingQuantity: null,
+        servingUnit: null,
+        servingSize: null,
+        source: MealSourceEntity.off,
+        nutriments: const MealNutrimentsEntity(
+          energyKcal100: 15,
+          carbohydrates100: 3,
+          fat100: 0,
+          proteins100: 1,
+          sugars100: null,
+          saturatedFat100: null,
+          fiber100: null,
+        ),
+      );
+      final state = await read({
+        'lettuce': [lettuce],
+      }, wrap());
+
+      final row = state.rows[2];
+      expect(row.usesAiEstimate, isFalse);
+      expect(row.meal!.nutriments.energyKcal100, 15);
+      expect(row.isEstimated, isTrue);
+      expect(row.amountText, '20');
+      expect(row.unit, 'g');
+    });
+
+    test('picking the database food over the AI one clears the label', () async {
+      final chicken = meal('Chicken');
+      final state = await read({
+        'breaded fried chicken': [chicken],
+      }, wrap());
+      expect(state.rows[1].usesAiEstimate, isTrue);
+
+      final bloc = blocWith({
+        'breaded fried chicken': [chicken],
+      }, photoReader: _StubPhotoReader(wrap()));
+      bloc.add(
+        ReadMealPhotoEvent(photo: _photo, usesImperialUnits: false),
+      );
+      await bloc.stream.firstWhere((s) => s is BulkAddLoadedState);
+      bloc.add(const ChangeRowCandidateEvent(1, 1));
+      final after = await bloc.stream.first as BulkAddLoadedState;
+
+      expect(after.rows[1].usesAiEstimate, isFalse);
+      expect(after.rows[1].meal!.name, 'Chicken');
+    });
+
+    test('the amount stays editable and stops being "estimated"', () async {
+      final bloc = blocWith(
+        const {},
+        photoReader: _StubPhotoReader(wrap()),
+      );
+      bloc.add(ReadMealPhotoEvent(photo: _photo, usesImperialUnits: false));
+      await bloc.stream.firstWhere((s) => s is BulkAddLoadedState);
+
+      bloc.add(const ChangeRowAmountEvent(1, '150'));
+      final state = await bloc.stream.first as BulkAddLoadedState;
+
+      expect(state.rows[1].amountText, '150');
+      expect(state.rows[1].isEstimated, isFalse);
+      expect(state.rows[0].isEstimated, isTrue, reason: 'the others are not touched');
+      expect(state.dishWeightG, 70 + 150 + 20);
+    });
+
+    test('a portion the matched food lacks falls back to the model\'s grams', () async {
+      final bread = ParsedMealItem(
+        query: 'bread',
+        quantity: 2,
+        portion: 'slice',
+        estimated: true,
+        estimatedGrams: 60,
+        aiPer100: macros,
+      );
+      final state = await read(
+        {
+          'bread': [meal('Bread')],
+        },
+        wrap(components: [bread]),
+      );
+
+      final row = state.rows.single;
+      expect(row.amountText, '60');
+      expect(row.unit, 'g');
+      expect(row.amountNeedsCheck, isFalse);
+      expect(row.willBeLogged, isTrue);
+    });
+
+    test('a portion the food has is used, db portions and custom alike', () async {
+      final bread = ParsedMealItem(
+        query: 'bread',
+        quantity: 2,
+        portion: 'slice',
+        estimated: true,
+        estimatedGrams: 60,
+      );
+      final slice = MealPortionEntity(
+        label: '1 slice',
+        englishLabel: '1 slice',
+        gramWeight: 30,
+        localized: true,
+      );
+      final state = await read(
+        {
+          'bread': [meal('Bread', portions: [slice])],
+        },
+        wrap(components: [bread]),
+      );
+
+      final row = state.rows.single;
+      expect(row.amountText, '2');
+      expect(row.unit, 'serving');
+      expect(row.isEstimated, isTrue);
+    });
+
+    test('skipping the dish skips every part, and again brings them back', () async {
+      final bloc = blocWith(
+        const {},
+        photoReader: _StubPhotoReader(wrap(items: [estimate('fries', 150)])),
+      );
+      bloc.add(ReadMealPhotoEvent(photo: _photo, usesImperialUnits: false));
+      await bloc.stream.firstWhere((s) => s is BulkAddLoadedState);
+
+      bloc.add(const ToggleDishSkippedEvent());
+      var state = await bloc.stream.first as BulkAddLoadedState;
+      expect(state.dishRows.every((r) => r.skipped), isTrue);
+      expect(state.plateRows.single.skipped, isFalse);
+      expect(state.loggableCount, 1);
+
+      bloc.add(const ToggleDishSkippedEvent());
+      state = await bloc.stream.first as BulkAddLoadedState;
+      expect(state.dishRows.every((r) => !r.skipped), isTrue);
+      expect(state.loggableCount, 2);
+    });
+
+    test('the dish row opens and closes', () async {
+      final bloc = blocWith(
+        const {},
+        photoReader: _StubPhotoReader(wrap()),
+      );
+      bloc.add(ReadMealPhotoEvent(photo: _photo, usesImperialUnits: false));
+      final loaded = await bloc.stream.firstWhere((s) => s is BulkAddLoadedState)
+          as BulkAddLoadedState;
+      expect(loaded.dish!.expanded, isFalse);
+
+      bloc.add(const ToggleDishExpandedEvent());
+      final open = await bloc.stream.first as BulkAddLoadedState;
+      expect(open.dish!.expanded, isTrue);
+    });
+
+    test('the caption reaches the reader', () async {
+      final reader = _StubPhotoReader(wrap());
+      await read(const {}, wrap(), reader: reader);
+
+      expect(reader.sawCaption, 'katsu chicken wrap');
+    });
+
+    test('a photo with no dish behaves as it did', () async {
+      final state = await read(
+        {
+          'egg': [meal('Egg', servingQuantity: 50)],
+        },
+        const MealPhotoRead(
+          MealTextParseResult(
+            items: [ParsedMealItem(query: 'egg', quantity: 2)],
+            errors: [],
+          ),
+        ),
+      );
+
+      expect(state.dish, isNull);
+      expect(state.rows.single.amountText, '2');
+      expect(state.rows.single.isEstimated, isFalse);
+      expect(state.rows.single.usesAiEstimate, isFalse);
+      expect(state.loggableCount, 1);
+    });
   });
 
   group('reading a photo', () {
@@ -1574,6 +1859,7 @@ final _photo = MealPhoto(
 /// Returns a fixed reading without touching a credential or a network.
 class _StubPhotoReader implements ReadMealPhotoUseCase {
   final MealPhotoReadResult reading;
+  String? sawCaption;
 
   _StubPhotoReader(this.reading);
 
@@ -1581,7 +1867,11 @@ class _StubPhotoReader implements ReadMealPhotoUseCase {
   Future<MealPhotoReadResult> read(
     MealPhoto photo, {
     String? localeCode,
-  }) async => reading;
+    String? caption,
+  }) async {
+    sawCaption = caption;
+    return reading;
+  }
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);

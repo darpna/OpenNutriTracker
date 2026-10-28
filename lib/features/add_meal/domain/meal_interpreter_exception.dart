@@ -100,11 +100,25 @@ class MealInterpreterException implements Exception {
   /// correctly needs to know which provider answered.
   final int? statusCode;
 
+  /// True when the provider answered 200 and what came back was not the shape
+  /// asked for — a body that will not decode, a tool call with no usable
+  /// arguments. The one failure the photo interpreter answers by asking again
+  /// the old, simpler way (see `ModelMealPhotoInterpreter`); every other kind
+  /// says something about the account, the network or the model's abilities
+  /// that a second request cannot change.
+  final bool badReply;
+
   const MealInterpreterException(
     this.reason, {
     this.failure = MealInterpreterFailure.transient,
     this.statusCode,
+    this.badReply = false,
   });
+
+  const MealInterpreterException.badReply(this.reason)
+    : failure = MealInterpreterFailure.transient,
+      statusCode = null,
+      badReply = true;
 
   @override
   String toString() =>

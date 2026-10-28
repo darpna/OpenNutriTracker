@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:logging/logging.dart';
 import 'package:opennutritracker/features/add_meal/domain/meal_items_api.dart';
+import 'package:opennutritracker/features/add_meal/domain/meal_photo_reply.dart';
 import 'package:opennutritracker/features/add_meal/util/meal_text_parser.dart';
 
 /// Asks an OpenAI model for food items, reached directly.
@@ -21,12 +22,10 @@ import 'package:opennutritracker/features/add_meal/util/meal_text_parser.dart';
 /// From GPT-5.4, tool calling is unsupported in Chat Completions with
 /// `reasoning: none`, so the alternative pays reasoning tokens on every meal
 /// line the user types. Settled in #681.
-class OpenAiMealItemsApi implements MealItemsApi {
+class OpenAiMealItemsApi implements MealItemsApi, MealPhotoToolApi {
   static final _log = Logger('OpenAiMealItemsApi');
 
   static const _endpoint = 'https://api.openai.com/v1/responses';
-
-  static const _maxOutputTokens = 1024;
 
   static const defaultTimeout = Duration(seconds: 20);
 
@@ -53,6 +52,27 @@ class OpenAiMealItemsApi implements MealItemsApi {
     required MealContent content,
     required String system,
   }) async {
+    final input = await _callTool(mealItemsToolSpec, content, system);
+    return validateParsedMealItems(
+      mealItemsFromJson(input is Map ? input['items'] : null),
+      // Only the typed path corroborates: a photograph states no units at
+      // all, and its own counts-only filter already drops them.
+      statedIn: content is MealTextContent ? content.text : null,
+    );
+  }
+
+  /// The photo tool's raw input; `mealPhotoResultFromJson` validates it.
+  @override
+  Future<Object?> requestPhotoToolInput({
+    required MealPhotoContent content,
+    required String system,
+  }) => _callTool(mealPhotoToolSpec, content, system);
+
+  Future<Object?> _callTool(
+    MealToolSpec spec,
+    MealContent content,
+    String system,
+  ) async {
     final body = jsonEncode({
       'model': model,
       // Responses carries the system prompt here. There is no system role in
@@ -67,9 +87,9 @@ class OpenAiMealItemsApi implements MealItemsApi {
           // Completions nests both inside a `function` object, and sending
           // that shape here is rejected.
           'type': 'function',
-          'name': mealItemsToolName,
-          'description': mealItemsToolDescription,
-          'parameters': mealItemsToolSchema,
+          'name': spec.name,
+          'description': spec.description,
+          'parameters': spec.schema,
           // **Explicit, and the whole reason this line exists.** Omitting
           // `strict` on Responses does not leave the schema alone — it
           // normalises it into strict mode, which requires every key in
@@ -88,11 +108,11 @@ class OpenAiMealItemsApi implements MealItemsApi {
           'strict': false,
         },
       ],
-      'tool_choice': {'type': 'function', 'name': mealItemsToolName},
+      'tool_choice': {'type': 'function', 'name': spec.name},
       // The app never leaves content on a provider's side that it can avoid
       // leaving. Responses stores by default, so this is not a no-op.
       'store': false,
-      'max_output_tokens': _maxOutputTokens,
+      'max_output_tokens': spec.maxTokens,
     });
 
     final http.Response response;
@@ -127,15 +147,10 @@ class OpenAiMealItemsApi implements MealItemsApi {
     try {
       decoded = jsonDecode(response.body) as Map<String, dynamic>;
     } catch (_) {
-      throw const MealInterpreterException('malformed response');
+      throw const MealInterpreterException.badReply('malformed response');
     }
 
-    return validateParsedMealItems(
-      _itemsFrom(decoded),
-      // Only the typed path corroborates: a photograph states no units at
-      // all, and its own counts-only filter already drops them.
-      statedIn: content is MealTextContent ? content.text : null,
-    );
+    return _toolInputFrom(decoded, spec.name);
   }
 
   /// Responses content. **Image before text**, matching the Anthropic client
@@ -146,25 +161,25 @@ class OpenAiMealItemsApi implements MealItemsApi {
         MealTextContent(:final text) => [
           {'type': 'input_text', 'text': text},
         ],
-        MealPhotoContent(:final mediaType, :final base64Data) => [
+        final MealPhotoContent photo => [
           {
             'type': 'input_image',
-            'image_url': 'data:$mediaType;base64,$base64Data',
+            'image_url': 'data:${photo.mediaType};base64,${photo.base64Data}',
           },
-          {'type': 'input_text', 'text': mealPhotoContentPrompt},
+          {'type': 'input_text', 'text': mealPhotoPromptText(photo)},
         ],
       };
 
-  /// The items from the forced tool call.
+  /// The input of the forced tool call.
   ///
   /// The call is one element of `output`, which also carries reasoning
   /// summaries and any prose the model produced, so it has to be searched for
   /// rather than indexed. Its `arguments` is a JSON *string*, as on the
   /// OpenRouter path and unlike Anthropic's, which returns an object.
-  List<ParsedMealItem> _itemsFrom(Map<String, dynamic> decoded) {
+  Object? _toolInputFrom(Map<String, dynamic> decoded, String toolName) {
     final output = decoded['output'];
     if (output is! List) {
-      throw const MealInterpreterException('response has no output');
+      throw const MealInterpreterException.badReply('response has no output');
     }
 
     for (final entry in output) {
@@ -174,10 +189,10 @@ class OpenAiMealItemsApi implements MealItemsApi {
       // should be impossible — but "impossible" here means parsing whatever
       // arrived as though it were a meal, and the cost of the check is a
       // line.
-      if (entry['name'] != mealItemsToolName) continue;
+      if (entry['name'] != toolName) continue;
       final arguments = entry['arguments'];
       if (arguments is! String) {
-        throw const MealInterpreterException('tool call has no arguments');
+        throw const MealInterpreterException.badReply('tool call has no arguments');
       }
       final Object? parsed;
       try {
@@ -185,12 +200,12 @@ class OpenAiMealItemsApi implements MealItemsApi {
       } catch (_) {
         // Never the body: on the photo path a malformed reply can still
         // contain what was sent.
-        throw const MealInterpreterException('tool call arguments malformed');
+        throw const MealInterpreterException.badReply('tool call arguments malformed');
       }
       if (parsed is! Map) {
-        throw const MealInterpreterException('tool call is not an object');
+        throw const MealInterpreterException.badReply('tool call is not an object');
       }
-      return mealItemsFromJson(parsed['items']);
+      return parsed;
     }
 
     // A forced tool call that came back as prose. Raising beats returning

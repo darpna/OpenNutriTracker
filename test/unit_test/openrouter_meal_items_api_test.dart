@@ -803,7 +803,11 @@ void main() {
         ]),
       );
 
-      final result = await ModelMealPhotoInterpreter(apiWith(client)).interpret(
+      // Over the counts-only reading: this client answers the first tool, and
+      // the estimate reading has its own suite.
+      final result = await ModelMealPhotoInterpreter(
+        _ItemsOnlyApi(apiWith(client)),
+      ).interpret(
         MealPhoto(
           bytes: Uint8List.fromList([1, 2, 3, 4]),
           mediaType: 'image/webp',
@@ -825,4 +829,17 @@ void main() {
 class _LeakySocketException implements Exception {
   @override
   String toString() => 'connection failed to openrouter.ai';
+}
+
+/// Hides the photo tool so the interpreter takes the counts-only reading.
+class _ItemsOnlyApi implements MealItemsApi {
+  final MealItemsApi _inner;
+
+  _ItemsOnlyApi(this._inner);
+
+  @override
+  Future<MealTextParseResult> requestItems({
+    required MealContent content,
+    required String system,
+  }) => _inner.requestItems(content: content, system: system);
 }

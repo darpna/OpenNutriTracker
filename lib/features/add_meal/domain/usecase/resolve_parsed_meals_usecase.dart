@@ -1,9 +1,11 @@
 import 'package:logging/logging.dart';
 import 'package:opennutritracker/features/add_meal/domain/entity/meal_entity.dart';
 import 'package:opennutritracker/features/add_meal/domain/usecase/search_products_usecase.dart';
+import 'package:opennutritracker/features/add_meal/util/ai_estimate_meal.dart';
 import 'package:opennutritracker/features/add_meal/util/meal_relevance_ranker.dart';
 import 'package:opennutritracker/features/add_meal/util/meal_text_parser.dart';
 import 'package:opennutritracker/features/add_meal/util/resolver_relevance.dart';
+import 'package:opennutritracker/features/add_meal/util/soft_text_score.dart';
 
 /// Below this the top candidate is a guess rather than an answer, and the
 /// review screen (#602) should say so instead of presenting it as settled.
@@ -24,6 +26,31 @@ import 'package:opennutritracker/features/add_meal/util/resolver_relevance.dart'
 /// scorer exists for would have been flagged as a guess.
 const kResolutionConfidenceFloor = 0.45;
 
+/// Below this the model's own per-100 g estimate replaces the database match —
+/// but only for an item that carries one, which is a photo component.
+///
+/// **Stricter than [kResolutionConfidenceFloor] on purpose.** The floor decides
+/// when a match deserves a "check this" caution; this decides when a match is
+/// too far from the food to supply its *numbers*. Measured on the scorer:
+///
+/// * `eggs` → `Egg`, one word an inflection apart: 0.75, kept.
+/// * `fried chicken` → `Chicken` (raw, plain): 0.67, replaced — the record is the
+///   right family and the wrong food, 120 kcal against 250 for the dish.
+/// * `breaded fried chicken` → `Chicken, breaded, fried`: 1.0, kept — the query
+///   names both qualifiers.
+/// * `mayo` → `Mayonnaise`: 0.4, replaced; the estimate is as good as any
+///   record for it.
+///
+/// 0.7 sits between the second and the first. It only matters when a model
+/// supplied numbers: without them the item is resolved exactly as before.
+const kAiFallbackConfidenceThreshold = 0.7;
+
+/// A branded record that the query does not name, below this, is a generic
+/// ingredient matched to somebody's product — "Poultry (Coop Prix Garantie)" for
+/// `chicken`. Weak however well the name scored, because the numbers are that
+/// product's.
+const kBrandedMatchConfidence = 0.85;
+
 /// One parsed item and what the food search made of it.
 ///
 /// [candidates] is ranked best-first and may be empty — an item the search
@@ -38,11 +65,17 @@ class ResolvedMealItem {
   /// Score of the selected candidate, 0.0-1.0. Zero when unresolved.
   final double confidence;
 
+  /// True when [candidates] starts with a food built from the model's own
+  /// per-100 g estimate, because no database match was good enough. The
+  /// database candidates follow it, so the user can still pick one.
+  final bool usesAiEstimate;
+
   const ResolvedMealItem({
     required this.parsed,
     required this.candidates,
     required this.selectedIndex,
     required this.confidence,
+    this.usesAiEstimate = false,
   });
 
   bool get isResolved => candidates.isNotEmpty;
@@ -52,7 +85,7 @@ class ResolvedMealItem {
   /// True when a match was found but is weak enough that the review screen
   /// should flag it rather than presenting it as settled.
   bool get isLowConfidence =>
-      isResolved && confidence < kResolutionConfidenceFloor;
+      isResolved && !usesAiEstimate && confidence < kResolutionConfidenceFloor;
 
   @override
   String toString() =>
@@ -138,7 +171,20 @@ class ResolveParsedMealsUseCase {
     // not safe to log from. See resolver_relevance.dart.
     final ranked = rankForResolution(merged, query);
 
+    final estimate = item.aiPer100;
     if (ranked.isEmpty) {
+      // The seam this class's header always named: an item the database could
+      // not resolve, now answered with the model's own numbers when it gave
+      // some.
+      if (estimate != null) {
+        return ResolvedMealItem(
+          parsed: item,
+          candidates: [aiEstimateMeal(query, estimate)],
+          selectedIndex: 0,
+          confidence: 0.0,
+          usesAiEstimate: true,
+        );
+      }
       return ResolvedMealItem(
         parsed: item,
         candidates: const [],
@@ -147,11 +193,42 @@ class ResolveParsedMealsUseCase {
       );
     }
 
+    final confidence = scoreMealForResolution(ranked.first, query);
+    if (estimate != null && isWeakMatch(ranked.first, query, confidence)) {
+      return ResolvedMealItem(
+        parsed: item,
+        candidates: [aiEstimateMeal(query, estimate), ...ranked],
+        selectedIndex: 0,
+        confidence: confidence,
+        usesAiEstimate: true,
+      );
+    }
+
     return ResolvedMealItem(
       parsed: item,
       candidates: ranked,
       selectedIndex: 0,
-      confidence: scoreMealForResolution(ranked.first, query),
+      confidence: confidence,
     );
+  }
+
+  /// True when [top] is too poor a match for [query] to supply its numbers.
+  ///
+  /// Two ways. The score is under [kAiFallbackConfidenceThreshold]. Or the
+  /// record is a branded product the query never names and it scores under
+  /// [kBrandedMatchConfidence] — the matcher exposes the brand, not the region,
+  /// so a wrong-region record is only caught when it is branded.
+  static bool isWeakMatch(MealEntity top, String query, double confidence) {
+    if (confidence < kAiFallbackConfidenceThreshold) return true;
+    if (confidence >= kBrandedMatchConfidence) return false;
+    final brands = top.brands;
+    if (top.source != MealSourceEntity.off || brands == null) return false;
+    final brandTokens = tokenize(brands);
+    if (brandTokens.isEmpty) return false;
+    final queryTokens = tokenize(query);
+    final named = brandTokens.any(
+      (brand) => queryTokens.any((word) => tokenSimilarity(brand, word) >= 0.8),
+    );
+    return !named;
   }
 }

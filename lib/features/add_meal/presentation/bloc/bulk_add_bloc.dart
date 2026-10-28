@@ -6,6 +6,8 @@ import 'package:opennutritracker/features/add_meal/domain/meal_photo_interpreter
 import 'package:opennutritracker/features/add_meal/domain/usecase/read_meal_photo_usecase.dart';
 import 'package:opennutritracker/features/add_meal/domain/usecase/read_meal_text_usecase.dart';
 import 'package:opennutritracker/features/add_meal/domain/usecase/resolve_parsed_meals_usecase.dart';
+import 'package:opennutritracker/features/add_meal/util/ai_estimate_meal.dart';
+import 'package:opennutritracker/features/add_meal/util/estimate_settle.dart';
 import 'package:opennutritracker/features/add_meal/util/meal_text_parser.dart';
 import 'package:opennutritracker/features/add_meal/util/portion_match.dart';
 import 'package:opennutritracker/features/add_meal/util/portion_unit.dart';
@@ -107,6 +109,41 @@ class BulkAddRow extends Equatable {
 
   bool get isResolved => resolved.isResolved;
 
+  /// What the item asked for, with an estimated amount put into terms the
+  /// selected food can honour (see [settleEstimate]). Derived, so picking a
+  /// different candidate re-evaluates it against the food actually selected.
+  ParsedMealItem get parsed => settleEstimate(resolved.parsed, meal);
+
+  /// True when the selected food is the model's own per-100 g guess because no
+  /// database match was good enough. Re-evaluated on every candidate pick, so
+  /// choosing a database food clears it.
+  bool get usesAiEstimate => isResolved && (meal?.isAiEstimate ?? false);
+
+  /// True while the amount on screen is still the model's estimate: flagged
+  /// when read, cleared once the user types or picks a unit.
+  bool get isEstimated =>
+      isResolved && parsed.estimated && !amountEditedByUser && !unitChosenByUser;
+
+  /// The amount as a number, or null while it is not one.
+  double? get amountValue =>
+      double.tryParse(amountText.trim().replaceAll(',', '.'));
+
+  /// The amount in grams (or millilitres), when it can be worked out.
+  double? get baseAmount {
+    final food = meal;
+    final quantity = amountValue;
+    if (food == null || quantity == null || quantity <= 0) return null;
+    return convertQuantityToBaseUnit(quantity, effectiveUnit, food);
+  }
+
+  /// The row's energy at its current amount, when the food reports one.
+  double? get kcal {
+    final food = meal;
+    final quantity = amountValue;
+    if (food == null || quantity == null || quantity <= 0) return null;
+    return kcalForQuantity(quantity, effectiveUnit, food);
+  }
+
   /// True when a match was found but is weak enough to show a caution.
   /// Only meaningful for the resolver's own first choice — once the user
   /// picks a candidate themselves, the machine's doubt is no longer
@@ -164,8 +201,8 @@ class BulkAddRow extends Equatable {
       // second complaint about its amount is noise on a row that cannot be
       // logged anyway.
       isResolved &&
-      resolved.parsed.quantity != null &&
-      (resolved.parsed.unit == null
+      parsed.quantity != null &&
+      (parsed.unit == null
           // Nothing stated, and nothing for the number to count — or a
           // portion named that the food's own rows do not hold, so the
           // count fell to the default row instead.
@@ -204,20 +241,20 @@ class BulkAddRow extends Equatable {
   /// picking a unit is the answer the warning asks for, and the dropdown
   /// holds every portion the food has.
   bool get portionKeyMissed {
-    final key = resolved.parsed.portion;
+    final key = parsed.portion;
     final food = meal;
     if (key == null || food == null || fromPhoto) return false;
-    if (resolved.parsed.quantity == null) return false;
+    if (parsed.quantity == null) return false;
     if (food.portionsUnavailable || food.portions.isEmpty) return false;
     return matchPortionToKey(key, food.portions) == null &&
-        matchPortionToQuery(resolved.parsed.query, food.portions) == null;
+        matchPortionToQuery(parsed.query, food.portions) == null;
   }
 
   /// True when the amount on this row is the app's flat fallback — neither
   /// stated by the user nor carried by the food record.
   ///
   /// The gap [amountNeedsCheck] cannot see, and deliberately so: that getter
-  /// requires `resolved.parsed.quantity != null`, so it only ever speaks about
+  /// requires `parsed.quantity != null`, so it only ever speaks about
   /// a number somebody supplied. When nobody supplies one the row falls to
   /// 100 g (1 oz imperial) and says nothing at all — the case where the app
   /// guesses hardest is the one case it stayed quiet about. #864.
@@ -244,7 +281,7 @@ class BulkAddRow extends Equatable {
   bool get amountIsProvisional =>
       !amountEditedByUser &&
       isResolved &&
-      resolved.parsed.quantity == null &&
+      parsed.quantity == null &&
       meal?.servingQuantity == null;
 
   List<String> get allowedUnits => [
@@ -312,11 +349,11 @@ class BulkAddRow extends Equatable {
     if (!amountNeedsCheck) return false;
     // Nothing to compare against: the count has no unit and no serving to
     // land on.
-    if (resolved.parsed.unit == null) return true;
+    if (parsed.unit == null) return true;
     // A serving the food cannot honour. Checked before the conversion, not
     // by it — see above.
     if (isPortionUnit(unit)) return true;
-    final quantity = resolved.parsed.quantity;
+    final quantity = parsed.quantity;
     final food = meal;
     if (quantity == null || food == null) return true;
     return convertQuantityToBaseUnit(quantity, unit, food) !=
@@ -377,7 +414,7 @@ class BulkAddRow extends Equatable {
 
   @override
   List<Object?> get props => [
-    resolved.parsed.query,
+    parsed.query,
     // A serving added or deleted changes what the unit picker offers.
     meal?.portions,
     selectedIndex,
@@ -435,6 +472,8 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
       (event, emit) => emit(BulkAddPhotoErrorState(event.error)),
     );
     on<CancelBulkReadEvent>(_onCancel);
+    on<ToggleDishExpandedEvent>(_onToggleDishExpanded);
+    on<ToggleDishSkippedEvent>(_onToggleDishSkipped);
     on<ChangeRowCandidateEvent>(_onChangeCandidate);
     on<ChangeRowAmountEvent>(_onChangeAmount);
     on<ChangeRowUnitEvent>(_onChangeUnit);
@@ -485,6 +524,7 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
     final reading = await _readMealPhotoUseCase.read(
       event.photo,
       localeCode: event.localeCode,
+      caption: event.caption,
     );
     if (emit.isDone || _superseded(attempt)) return;
 
@@ -547,7 +587,8 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
     required BulkAddReadSource source,
     MealTextModelFailure? modelFailure,
   }) async {
-    if (parsed.items.isEmpty) {
+    final dish = parsed.dish;
+    if (parsed.items.isEmpty && dish == null) {
       // Nothing usable. The parser's own errors still go through so the
       // user is told why, rather than the screen just doing nothing.
       emit(
@@ -563,10 +604,13 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
     }
 
     try {
+      // The dish's components go first, so they are the leading rows and the
+      // dish is described by how many there are.
       final resolved = [
-        for (final item in await _resolveParsedMealsUseCase.resolve(
-          parsed.items,
-        ))
+        for (final item in await _resolveParsedMealsUseCase.resolve([
+          ...?dish?.components,
+          ...parsed.items,
+        ]))
           await _withCustomPortions(item),
       ];
       if (emit.isDone || _superseded(attempt)) return;
@@ -575,26 +619,18 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
         BulkAddLoadedState(
           rows: [
             for (final item in resolved)
-              BulkAddRow(
-                resolved: item,
-                selectedIndex: item.selectedIndex,
-                amountText: _initialAmount(
-                  item.parsed,
-                  item.selected,
-                  usesImperialUnits,
-                ),
-                unit: _initialUnit(
-                  item.parsed,
-                  item.selected,
-                  usesImperialUnits,
-                ),
-                fromPhoto: source == BulkAddReadSource.photo,
-              ),
+              _rowFor(item, usesImperialUnits, source),
           ],
           parseErrors: parsed.errors,
           usesImperialUnits: usesImperialUnits,
           source: source,
           modelFailure: modelFailure,
+          dish: dish == null
+              ? null
+              : BulkAddDish(
+                  name: dish.name,
+                  componentCount: dish.components.length,
+                ),
         ),
       );
     } catch (e, stackTrace) {
@@ -602,6 +638,21 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
       if (emit.isDone || _superseded(attempt)) return;
       emit(const BulkAddErrorState());
     }
+  }
+
+  BulkAddRow _rowFor(
+    ResolvedMealItem item,
+    bool usesImperialUnits,
+    BulkAddReadSource source,
+  ) {
+    final settled = settleEstimate(item.parsed, item.selected);
+    return BulkAddRow(
+      resolved: item,
+      selectedIndex: item.selectedIndex,
+      amountText: _initialAmount(settled, item.selected, usesImperialUnits),
+      unit: _initialUnit(settled, item.selected, usesImperialUnits),
+      fromPhoto: source == BulkAddReadSource.photo,
+    );
   }
 
   /// The parser leaves quantity null when the user stated none. Fall back to
@@ -714,8 +765,8 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
       // row: anything the user typed or chose outranks a default.
       if (!moved.isPristine) return moved;
       return moved.copyWith(
-        amountText: _initialAmount(row.resolved.parsed, moved.meal, imperial),
-        unit: _initialUnit(row.resolved.parsed, moved.meal, imperial),
+        amountText: _initialAmount(moved.parsed, moved.meal, imperial),
+        unit: _initialUnit(moved.parsed, moved.meal, imperial),
       );
     });
   }
@@ -747,6 +798,41 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
       event.rowIndex,
       emit,
       (row) => row.copyWith(skipped: !row.skipped),
+    );
+  }
+
+  void _onToggleDishExpanded(
+    ToggleDishExpandedEvent event,
+    Emitter<BulkAddState> emit,
+  ) {
+    final current = state;
+    if (current is! BulkAddLoadedState || current.dish == null) return;
+    emit(
+      current.copyWith(
+        dish: current.dish!.copyWith(expanded: !current.dish!.expanded),
+      ),
+    );
+  }
+
+  /// Skips every component when any is still in, otherwise includes them all
+  /// again, so one tap on the dish row drops or restores the whole dish.
+  void _onToggleDishSkipped(
+    ToggleDishSkippedEvent event,
+    Emitter<BulkAddState> emit,
+  ) {
+    final current = state;
+    final dish = current is BulkAddLoadedState ? current.dish : null;
+    if (current is! BulkAddLoadedState || dish == null) return;
+    final skip = current.dishRows.any((row) => !row.skipped);
+    emit(
+      current.copyWith(
+        rows: [
+          for (var i = 0; i < current.rows.length; i++)
+            i < dish.componentCount
+                ? current.rows[i].copyWith(skipped: skip)
+                : current.rows[i],
+        ],
+      ),
     );
   }
 
@@ -889,7 +975,11 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
       return row.copyWith(
         resolved: _replaceSelected(row, merged),
         unit: moved
-            ? _initialUnit(row.resolved.parsed, merged, imperial)
+            ? _initialUnit(
+                settleEstimate(row.resolved.parsed, merged),
+                merged,
+                imperial,
+              )
             : null,
       );
     });

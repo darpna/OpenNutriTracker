@@ -40,10 +40,15 @@ class ReadMealPhotoEvent extends BulkAddEvent {
   /// language the food search is querying.
   final String? localeCode;
 
+  /// What the user typed about the photo, or null. Sent to the model with the
+  /// image; any amount it states replaces the model's estimate.
+  final String? caption;
+
   const ReadMealPhotoEvent({
     required this.photo,
     required this.usesImperialUnits,
     this.localeCode,
+    this.caption,
   });
 
   // The bytes are deliberately not compared: equality on a megabyte of image
@@ -54,6 +59,7 @@ class ReadMealPhotoEvent extends BulkAddEvent {
     photo.bytes.length,
     usesImperialUnits,
     localeCode,
+    caption,
   ];
 }
 
@@ -148,4 +154,14 @@ class DeleteRowCustomPortionEvent extends BulkAddEvent {
 
   @override
   List<Object?> get props => [rowIndex, portionId];
+}
+
+/// Opens or closes the dish row's list of components.
+class ToggleDishExpandedEvent extends BulkAddEvent {
+  const ToggleDishExpandedEvent();
+}
+
+/// Skips every component of the dish, or includes them all again.
+class ToggleDishSkippedEvent extends BulkAddEvent {
+  const ToggleDishSkippedEvent();
 }

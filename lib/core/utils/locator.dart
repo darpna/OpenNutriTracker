@@ -89,6 +89,7 @@ import 'package:opennutritracker/core/utils/ai_credential_storage.dart';
 import 'package:opennutritracker/features/add_meal/data/meal_items_api_factory.dart';
 import 'package:opennutritracker/features/add_meal/data/model_meal_photo_interpreter.dart';
 import 'package:opennutritracker/features/add_meal/data/model_meal_text_interpreter.dart';
+import 'package:opennutritracker/features/add_meal/domain/usecase/save_photo_dish_usecase.dart';
 import 'package:opennutritracker/features/add_meal/domain/usecase/probe_ai_endpoint_usecase.dart';
 import 'package:opennutritracker/features/add_meal/domain/usecase/read_meal_photo_usecase.dart';
 import 'package:opennutritracker/features/add_meal/domain/usecase/read_meal_text_usecase.dart';
@@ -644,6 +645,9 @@ Future<void> initLocator() async {
   // Recipe use cases
   locator.registerLazySingleton(() => ComputeRecipeNutritionUseCase());
   locator.registerLazySingleton(() => SaveRecipeUseCase(locator(), locator()));
+  locator.registerLazySingleton(
+    () => SavePhotoDishUseCase(locator(), locator(), locator()),
+  );
   locator.registerLazySingleton(() => GetAllRecipesUseCase(locator()));
   locator.registerLazySingleton(() => GetRecipeByIdUseCase(locator()));
   locator.registerLazySingleton(
