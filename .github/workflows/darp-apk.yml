@@ -76,14 +76,45 @@ jobs:
       - name: Unit + widget tests
         run: flutter test
 
+  # Decides whether a pull request needs the emulator. A workflow-level `paths:`
+  # filter would also stop `test` on every other PR, so the filter lives here.
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      run: ${{ steps.filter.outputs.run }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Does the PR touch what the smoke test guards?
+        id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          pattern='^(integration_test/|\.github/workflows/darp-apk\.yml$|lib/core/data/|lib/core/utils/locator\.dart$|pubspec\.)'
+          if git diff --name-only "$BASE_SHA...$HEAD_SHA" | grep -E "$pattern"; then
+            echo 'run=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'run=false' >> "$GITHUB_OUTPUT"
+          fi
+
   # Boots the develop flavor on a real Android emulator before an APK is built
   # and sideloaded. Gated only on offline, deterministic checks (start over
   # existing data, log a meal, export/import round trip); the food-search
   # probe inside it is report-only. See integration_test/darp_smoke_test.dart.
   smoke:
-    needs: test
-    # Emulator minutes are not spent on PRs; the push to darp is the gate.
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: [test, changes]
+    # Always on push/dispatch; on a PR only when it touches storage, startup or
+    # the smoke test itself (see `changes`), so unrelated PRs skip the emulator.
+    if: >-
+      ${{ !cancelled() && needs.test.result == 'success'
+      && (github.event_name != 'pull_request' || needs.changes.outputs.run == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
