@@ -93,6 +93,8 @@ A run of 20 photos takes about seven minutes.
       "unmatched": ["katsu sauce"],
       "total_kcal": 300.3,
       "error": null,
+      "http_status": null,
+      "provider_error": null,
       "portion_g": 250.0,
       "confidence": "medium",
       "grounded": { "grams": 250.0, "kcal": 540.2, "protein_g": 28.1, "carbs_g": 61.0, "fat_g": 19.4 },
@@ -111,7 +113,7 @@ A run of 20 photos takes about seven minutes.
 - `error` is a failure kind (`transient`, `auth`, `providerError`,
   `unreadable`, …). `unreadable` means the photo could not be encoded; a
   provider that answered with an HTTP error is never reported as that. For
-  those, `http_status` and `provider_error` carry the status and the
+  those, `http_status` and `provider_error` (always present, null otherwise) carry the status and the
   provider's error text (cut to 200 characters, key-shaped strings masked), so
   a bad key, a rate limit and a bad photo can be told apart.
 - `grounded` is the dish total the app shows: the sum of the ingredients with

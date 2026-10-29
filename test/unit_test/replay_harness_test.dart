@@ -138,6 +138,8 @@ void main() {
         'unmatched',
         'total_kcal',
         'error',
+        'http_status',
+        'provider_error',
         'portion_g',
         'confidence',
         'grounded',
