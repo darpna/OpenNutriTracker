@@ -22,8 +22,14 @@ import 'package:opennutritracker/features/add_meal/util/meal_text_parser.dart';
 
 /// The base address as a user would type it, which the app completes to the
 /// chat route.
-const _typedAddress =
-    'https://generativelanguage.googleapis.com/v1beta/openai/';
+final _typedAddress = _variant == 'baseline'
+    ? 'https://generativelanguage.googleapis.com./v1beta/openai/'
+    : 'https://generativelanguage.googleapis.com/v1beta/openai/';
+
+/// `baseline` sends what the app sent before the Gemini fix: the same host
+/// written with a trailing dot, which is the same server but is not recognised
+/// as Google's, so no compatibility handling applies.
+final _variant = Platform.environment['PROBE_VARIANT'] ?? 'fixed';
 
 final _key = Platform.environment['GEMINI_API_KEY'] ?? '';
 final _model = Platform.environment['GEMINI_MODEL'] ?? 'gemini-3.8-flash';
@@ -117,7 +123,10 @@ void main() {
   setUp(() {
     final endpoint = AiCredentialStorage.resolveEndpoint(_typedAddress)!;
     // ignore: avoid_print
-    print('typed $_typedAddress -> requested as $endpoint, model $_model');
+    print(
+      'variant $_variant: typed $_typedAddress -> requested as $endpoint, '
+      'model $_model',
+    );
     selection = AiSelection(
       provider: AiProvider.ownServer,
       apiKey: _key,
@@ -133,44 +142,54 @@ void main() {
     mediaType: 'image/jpeg',
   );
 
-  test('text: the setup check, then the detail', () async {
-    if (_mode == 'photo') return;
-    final prober = AiEndpointProber(client, sampleImage: (_) async => null);
-    final verdict = await prober.probeText(selection);
-    // ignore: avoid_print
-    print('=== text verdict: ${verdict.name}');
-
-    final api = mealItemsApiFor(client, selection);
-    try {
-      _describe(
-        'text interpreter',
-        await ModelMealTextInterpreter(api).interpret(aiProbeMealLine),
-      );
-    } on MealInterpreterException catch (e) {
+  test(
+    'text: the setup check, then the detail',
+    () async {
+      if (_mode == 'photo') return;
+      final prober = AiEndpointProber(client, sampleImage: (_) async => null);
+      final verdict = await prober.probeText(selection);
       // ignore: avoid_print
-      print('=== text interpreter threw: $e');
-    }
-    expect(verdict, AiCapability.passed);
-  }, skip: skip);
+      print('=== text verdict: ${verdict.name}');
 
-  test('photo: the setup check, then the detail', () async {
-    if (_mode == 'text') return;
-    final photo = await sample();
-    final prober = AiEndpointProber(client, sampleImage: (_) async => photo);
-    final verdict = await prober.probePhoto(selection);
-    // ignore: avoid_print
-    print('=== photo verdict: ${verdict.name}');
+      final api = mealItemsApiFor(client, selection);
+      try {
+        _describe(
+          'text interpreter',
+          await ModelMealTextInterpreter(api).interpret(aiProbeMealLine),
+        );
+      } on MealInterpreterException catch (e) {
+        // ignore: avoid_print
+        print('=== text interpreter threw: $e');
+      }
+      expect(verdict, AiCapability.passed);
+    },
+    skip: skip,
+    timeout: const Timeout(Duration(minutes: 4)),
+  );
 
-    final api = mealItemsApiFor(client, selection);
-    try {
-      _describe(
-        'photo interpreter',
-        await ModelMealPhotoInterpreter(api).interpret(photo),
-      );
-    } on MealInterpreterException catch (e) {
+  test(
+    'photo: the setup check, then the detail',
+    () async {
+      if (_mode == 'text') return;
+      final photo = await sample();
+      final prober = AiEndpointProber(client, sampleImage: (_) async => photo);
+      final verdict = await prober.probePhoto(selection);
       // ignore: avoid_print
-      print('=== photo interpreter threw: $e');
-    }
-    expect(verdict, AiCapability.passed);
-  }, skip: skip);
+      print('=== photo verdict: ${verdict.name}');
+
+      final api = mealItemsApiFor(client, selection);
+      try {
+        _describe(
+          'photo interpreter',
+          await ModelMealPhotoInterpreter(api).interpret(photo),
+        );
+      } on MealInterpreterException catch (e) {
+        // ignore: avoid_print
+        print('=== photo interpreter threw: $e');
+      }
+      expect(verdict, AiCapability.passed);
+    },
+    skip: skip,
+    timeout: const Timeout(Duration(minutes: 4)),
+  );
 }

@@ -29,9 +29,13 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    name: probe (${{ matrix.model }}, ${{ matrix.variant }})
     strategy:
       fail-fast: false
       matrix:
+        # `baseline` is what the app sent before the Gemini fix; `fixed` is
+        # what it sends now. Comparing the two is how the cause is confirmed.
+        variant: [baseline, fixed]
         # A push runs both models; a manual run runs the one asked for.
         model: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.model) || '["gemini-3.8-flash","gemini-3.5-flash-lite"]') }}
     steps:
@@ -82,4 +86,5 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ matrix.model }}
           PROBE_MODE: ${{ inputs.mode || 'both' }}
+          PROBE_VARIANT: ${{ matrix.variant }}
         run: flutter test tool_test/gemini_probe_test.dart --reporter expanded
