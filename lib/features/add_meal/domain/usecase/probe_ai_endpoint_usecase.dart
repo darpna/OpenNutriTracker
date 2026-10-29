@@ -175,10 +175,11 @@ class AiEndpointProber {
       ).interpret(photo, localeCode: localeCode);
       // A recipe counts by its ingredients: the sliced loaf the probe sends
       // comes back as a dish with parts, which is a usable answer.
-      return _verdictFor(
-        result.items.length + (result.estimate?.ingredients.length ?? 0),
-        'photo',
-      );
+      final ingredients = [
+        for (final dish in result.estimate?.dishes ?? const [])
+          ...dish.ingredients,
+      ];
+      return _verdictFor(result.items.length + ingredients.length, 'photo');
     } on MealInterpreterException catch (e) {
       return _verdictForFailure(e, 'photo');
     } catch (e, stackTrace) {

@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:logging/logging.dart';
+import 'package:opennutritracker/features/add_meal/domain/food_number_cache.dart';
 import 'package:opennutritracker/features/add_meal/domain/meal_items_api.dart';
 import 'package:opennutritracker/features/add_meal/domain/meal_photo_interpreter.dart';
 import 'package:opennutritracker/features/add_meal/domain/meal_photo_reply.dart';
@@ -8,18 +9,21 @@ import 'package:opennutritracker/features/add_meal/domain/photo_estimate_process
 import 'package:opennutritracker/features/add_meal/util/generic_food_table.dart';
 import 'package:opennutritracker/features/add_meal/util/meal_text_parser.dart';
 
-/// Reads a photograph of a meal the way a dietitian would: name the dish, recall
-/// its recipe, list every ingredient (the oil that cannot be seen included), size
-/// them to the portion, and give each its nutrition.
+/// Reads a photograph of a meal the way a dietitian would: name every dish and
+/// side on the plate, recall each one's recipe, list every ingredient (the oil
+/// that cannot be seen included) with its grams, and give each its nutrition
+/// per 100 g.
 ///
 /// **One call per photo.** A reply that does not fit the schema is an error the
 /// caller shows, not a reason to ask again.
 ///
 /// **No food search.** The ingredients are named in USDA FoodData Central style
-/// and their numbers come from the model, replaced by the bundled generic table's
-/// where it knows the ingredient ([GenericFoodTable]) so the same food always
-/// has the same numbers. Open Food Facts is not consulted for what a photograph
-/// shows. See [finalizeEstimate] for the checks every reply goes through.
+/// and their numbers per 100 g come from the bundled generic table where it
+/// knows the ingredient ([GenericFoodTable]), else from what this device
+/// settled on for that name before ([FoodNumberCache]), else from the model,
+/// checked — so the same food always has the same numbers. Open Food Facts is
+/// not consulted for what a photograph shows. See [finalizeEstimate] for the
+/// checks every reply goes through.
 ///
 /// What a provider is asked is the same for all of them: the prompt, the
 /// schema and the single forced tool live above the seam, not in a client.
@@ -32,10 +36,16 @@ class ModelMealPhotoInterpreter implements MealPhotoInterpreter {
   /// keep the model's own numbers.
   final Future<GenericFoodTable?> Function()? _table;
 
+  /// Where a food's settled numbers are kept; null keeps nothing between
+  /// photos.
+  final FoodNumberCache? _cache;
+
   ModelMealPhotoInterpreter(
     this._api, {
     Future<GenericFoodTable?> Function()? table,
-  }) : _table = table;
+    FoodNumberCache? cache,
+  }) : _table = table,
+       _cache = cache;
 
   @override
   Future<MealTextParseResult> interpret(
@@ -72,7 +82,7 @@ class ModelMealPhotoInterpreter implements MealPhotoInterpreter {
     }
 
     // The model looked and listed nothing: no food in the photo.
-    if (raw.ingredients.isEmpty) {
+    if (raw.dishes.isEmpty) {
       return const MealTextParseResult(items: [], errors: []);
     }
 
@@ -86,7 +96,12 @@ class ModelMealPhotoInterpreter implements MealPhotoInterpreter {
     return MealTextParseResult(
       items: const [],
       errors: const [],
-      estimate: finalizeEstimate(raw, table: table, caption: caption),
+      estimate: finalizeEstimate(
+        raw,
+        table: table,
+        cache: _cache,
+        caption: caption,
+      ),
     );
   }
 }

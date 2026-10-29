@@ -44,13 +44,14 @@ MealEntity aiEstimateMeal(String query, AiPer100Estimate estimate) {
 }
 
 /// The food an ingredient of a photo estimate stands for: weight-based, with
-/// per-100 g values that give the ingredient's numbers at its grams.
+/// the ingredient's own per-100 g values.
 ///
-/// An ingredient whose numbers are the model's is marked like any AI estimate;
-/// one grounded in the generic table is an ordinary custom food.
+/// An ingredient whose numbers are the model's (directly, or remembered from
+/// an earlier photo) is marked like any AI estimate; one grounded in the
+/// generic table is an ordinary custom food.
 MealEntity ingredientMeal(EstimatedIngredient ingredient) {
-  final per100 = 100 / ingredient.grams;
-  final ai = ingredient.source == IngredientSource.ai;
+  final ai = isModelNumbers(ingredient);
+  final per100g = ingredient.per100g;
   return MealEntity(
     code:
         '${ai ? aiEstimateCodePrefix : 'usda:'}${ingredient.name.toLowerCase()}',
@@ -62,10 +63,10 @@ MealEntity ingredientMeal(EstimatedIngredient ingredient) {
     servingUnit: null,
     servingSize: null,
     nutriments: MealNutrimentsEntity(
-      energyKcal100: ingredient.kcal * per100,
-      carbohydrates100: ingredient.carbsG * per100,
-      fat100: ingredient.fatG * per100,
-      proteins100: ingredient.proteinG * per100,
+      energyKcal100: per100g.kcal,
+      carbohydrates100: per100g.carbsG,
+      fat100: per100g.fatG,
+      proteins100: per100g.proteinG,
       sugars100: null,
       saturatedFat100: null,
       fiber100: null,
@@ -73,3 +74,12 @@ MealEntity ingredientMeal(EstimatedIngredient ingredient) {
     source: MealSourceEntity.custom,
   );
 }
+
+/// True when [ingredient]'s numbers came from a model rather than the table: a
+/// cached value is the table's only when a table match wrote it.
+bool isModelNumbers(EstimatedIngredient ingredient) =>
+    switch (ingredient.source) {
+      IngredientSource.ai => true,
+      IngredientSource.db => false,
+      IngredientSource.cache => ingredient.matchedName == null,
+    };

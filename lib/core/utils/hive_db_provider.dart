@@ -54,6 +54,10 @@ class HiveDBProvider extends ChangeNotifier {
   static const cachedOffMealTimestampsBoxName = 'CachedOffMealTimestampsBox';
   // #70 follow-up: saved Custom activity templates (name + typical kcal).
   static const customActivityTemplateBoxName = 'CustomActivityTemplateBox';
+  // The per-100 g numbers the photo estimate settled on for each food name
+  // (see FoodNumberCacheDataSource). Shared by every profile, like the OFF
+  // cache.
+  static const foodNumberCacheBoxName = 'FoodNumberCacheBox';
   // The servings the user named for a food ("1 bowl = 250 g"). Shared like
   // the libraries above: they describe the food, not one person's diary.
   static const customPortionBoxName = 'CustomPortionBox';
@@ -99,6 +103,7 @@ class HiveDBProvider extends ChangeNotifier {
   // Global boxes — opened once, never closed on a profile switch.
   late final Box<MealDBO> cachedOffMealBox;
   late final Box<int> cachedOffMealTimestampsBox;
+  late final Box<String> foodNumberCacheBox;
   late final Box<ProfileDBO> profileBox;
   // Backed by a getter so a scoped provider (cross-profile writes) can point
   // it at the real shared box without going through initHiveDB.
@@ -196,6 +201,7 @@ class HiveDBProvider extends ChangeNotifier {
       customActivityTemplateBoxName,
     );
     customPortionBox = await _openEncryptedBox(customPortionBoxName);
+    foodNumberCacheBox = await _openEncryptedBox(foodNumberCacheBoxName);
   }
 
   /// Opens the per-profile box-set for [profileId] / [boxSuffix] and

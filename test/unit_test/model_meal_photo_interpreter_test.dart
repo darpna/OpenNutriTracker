@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:opennutritracker/features/add_meal/data/model_meal_photo_interpreter.dart';
+import 'package:opennutritracker/features/add_meal/domain/food_number_cache.dart';
 import 'package:opennutritracker/features/add_meal/domain/meal_items_api.dart';
 import 'package:opennutritracker/features/add_meal/domain/meal_photo_interpreter.dart';
 import 'package:opennutritracker/features/add_meal/domain/meal_photo_reply.dart';
@@ -48,9 +49,12 @@ final _photo = MealPhoto(
   mediaType: 'image/jpeg',
 );
 
-Object? _fixture() => jsonDecode(
-  File('test/fixture/photo_estimate_reply.json').readAsStringSync(),
-);
+Object? _fixture([String name = 'photo_estimate_multi_dish.json']) =>
+    jsonDecode(File('test/fixture/$name').readAsStringSync());
+
+List<EstimatedIngredient> _ingredients(MealTextParseResult result) => [
+  for (final dish in result.estimate!.dishes) ...dish.ingredients,
+];
 
 void main() {
   test(
@@ -62,10 +66,23 @@ void main() {
       expect(api.contents, hasLength(1));
       expect(api.systems.single, mealPhotoSystemPrompt);
       expect(mealPhotoPromptText(api.contents.single), 'Caption: none');
-      expect(result.estimate!.dish, 'Dal makhani with rice');
+      expect(result.estimate!.dishes.map((d) => d.dish), [
+        'Idli',
+        'Sambar',
+        'Coconut chutney',
+        'Chicken Pad Thai',
+      ]);
       expect(result.items, isEmpty);
     },
   );
+
+  test('a reply in the earlier one-dish shape still lands', () async {
+    final result = await ModelMealPhotoInterpreter(
+      _PhotoApi(_fixture('photo_estimate_reply.json')),
+    ).interpret(_photo);
+
+    expect(result.estimate!.dishes.single.dish, 'Dal makhani with rice');
+  });
 
   test('the caption travels as text in the same single request', () async {
     final api = _PhotoApi(_fixture());
@@ -85,9 +102,11 @@ void main() {
       _PhotoApi(_fixture()),
     ).interpret(_photo);
 
-    expect(result.estimate!.ingredients.map((i) => i.source).toSet(), {
-      IngredientSource.ai,
-    });
+    // Ai, or the cache this reply built: "Water" is listed twice.
+    expect(
+      _ingredients(result).map((i) => i.source).toSet(),
+      isNot(contains(IngredientSource.db)),
+    );
   });
 
   test(
@@ -98,7 +117,7 @@ void main() {
         table: () async => throw StateError('asset missing'),
       ).interpret(_photo);
 
-      expect(result.estimate!.ingredients, isNotEmpty);
+      expect(_ingredients(result), isNotEmpty);
     },
   );
 
@@ -111,10 +130,30 @@ void main() {
       table: () async => table,
     ).interpret(_photo);
 
-    final rice = result.estimate!.ingredients.first;
+    final rice = _ingredients(result).first;
     expect(rice.source, IngredientSource.db);
-    expect(rice.grams, 180, reason: 'the model keeps the grams');
-    expect(rice.kcal, closeTo(234, 1));
+    expect(rice.grams, 110, reason: 'the model keeps the grams');
+    expect(rice.kcal, closeTo(143, 1));
+  });
+
+  test('a second photo of the same foods gets the same numbers', () async {
+    final cache = MemoryFoodNumberCache();
+    final first = await ModelMealPhotoInterpreter(
+      _PhotoApi(_fixture()),
+      cache: cache,
+    ).interpret(_photo);
+    final second = await ModelMealPhotoInterpreter(
+      _PhotoApi(_fixture()),
+      cache: cache,
+    ).interpret(_photo);
+
+    expect(_ingredients(second).map((i) => i.source).toSet(), {
+      IngredientSource.cache,
+    });
+    expect(
+      _ingredients(second).map((i) => i.per100g),
+      _ingredients(first).map((i) => i.per100g),
+    );
   });
 
   test(
@@ -138,7 +177,7 @@ void main() {
 
   test('an empty ingredient list is "no food", not an error', () async {
     final result = await ModelMealPhotoInterpreter(
-      _PhotoApi({'ingredients': []}),
+      _PhotoApi({'dishes': []}),
     ).interpret(_photo);
 
     expect(result.items, isEmpty);

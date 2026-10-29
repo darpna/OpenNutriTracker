@@ -86,8 +86,19 @@ void main() {
       expect(_hasKey(mealPhotoToolSchema, 'additionalProperties'), isTrue);
       expect(_hasKey(stripped, 'additionalProperties'), isFalse);
       expect(stripped['required'], mealPhotoToolSchema['required']);
-      final dish = (stripped['properties'] as Map)['dish'] as Map;
-      expect(dish['required'], ['name', 'components']);
+      final dishes = (stripped['properties'] as Map)['dishes'] as Map;
+      final dish = dishes['items'] as Map;
+      expect(dish['required'], [
+        'name',
+        'portion_g',
+        'servings',
+        'ingredients',
+        'confidence',
+        'assumptions',
+      ]);
+      final ingredient =
+          ((dish['properties'] as Map)['ingredients'] as Map)['items'] as Map;
+      expect(ingredient['required'], ['name', 'grams', 'per100g']);
     });
 
     test('leaves the shared constants untouched', () {

@@ -195,9 +195,10 @@ class MealTextParseResult {
   /// [items] then holds whatever else was on the plate.
   final ParsedMealDish? dish;
 
-  /// Set only by the photo reader: the dish as a recipe, with the numbers for
-  /// this portion. When it is set the photo needs no food search at all.
-  final PhotoRecipeEstimate? estimate;
+  /// Set only by the photo reader: every dish on the plate as a recipe, with
+  /// the numbers for this portion. When it is set the photo needs no food
+  /// search at all.
+  final PhotoMealEstimate? estimate;
 
   const MealTextParseResult({
     required this.items,
@@ -207,6 +208,14 @@ class MealTextParseResult {
   });
 
   bool get hasErrors => errors.isNotEmpty;
+
+  MealTextParseResult withEstimate(PhotoMealEstimate? estimate) =>
+      MealTextParseResult(
+        items: items,
+        errors: errors,
+        dish: dish,
+        estimate: estimate,
+      );
 }
 
 /// Applies the bounds [parseMealText] enforces to items that were extracted
