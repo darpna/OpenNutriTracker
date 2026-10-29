@@ -165,12 +165,17 @@ would have had with the feature switched off. On the photo path there is nothing
 it becomes the one line the screen has for it: *Couldn't read the photo. Check your connection and
 try again.* Right for the common cause of a transient failure, and wrong for this one.
 
-**Being cut off is not a case the app recognises.** The answer is capped at 1024 tokens, which is
+**Being cut off is recognised in one case only.** The answer is capped at 1024 tokens, which is
 roomy for a short list of short strings and short enough that a runaway is stopped early, and no
 client reads the flag a provider sets when that cap is reached. A truncated reply is therefore
 judged only on whether what arrived still parses: losing a closing brace makes it malformed and
 lands it with everything above, while a partial list that parses is believed as though it were the
-whole answer.
+whole answer. The exception is the OpenAI-compatible client seeing `finish_reason: "length"` with
+no tool call at all: the budget went on something other than the answer (a thinking model's
+reasoning), which is `transient` rather than the `unsupported` a missing tool call would otherwise
+mean. Google's endpoint, where this happens, also gets a larger budget and `reasoning_effort: low`,
+and its tool schema without `additionalProperties` — see
+[`gemini_compat.dart`](../lib/features/add_meal/data/gemini_compat.dart).
 
 **None of the three clients puts what you typed, or your photograph, into a log or an error
 string.** A socket error can carry the request URL and, on some platforms, part of the payload,
