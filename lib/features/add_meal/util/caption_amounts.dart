@@ -41,7 +41,7 @@ MealTextParseResult applyCaptionAmounts(
   final text = caption?.trim();
   if (text == null || text.isEmpty) return result;
 
-  final stated = _statedAmounts(text);
+  final stated = statedAmounts(text);
   if (stated.isEmpty) return result;
 
   // `textStatesAUnit` is the guard the typed path uses for the same question:
@@ -76,7 +76,7 @@ MealTextParseResult applyCaptionAmounts(
       continue;
     }
 
-    if (dish != null && _agreement(tokens, tokenize(dish.name)) > 0) {
+    if (dish != null && captionAgreement(tokens, tokenize(dish.name)) > 0) {
       final scaled = _rescaled(components, amount);
       if (scaled != null) {
         components
@@ -110,7 +110,7 @@ ParsedMealItem _stated(ParsedMealItem target, ParsedMealItem amount) =>
 /// sentence, the words from there to the next one, read the same way, so
 /// "wrap with 200g chicken and 50g lettuce" yields both. Nothing is invented
 /// that the parser would not accept: a slice that is only a unit is dropped.
-List<ParsedMealItem> _statedAmounts(String text) {
+List<ParsedMealItem> statedAmounts(String text) {
   final found = <ParsedMealItem>[];
   void add(ParsedMealItem item) {
     if (item.quantity == null) return;
@@ -149,7 +149,7 @@ ParsedMealItem? _bestTarget(
   var bestScore = 0.0;
   for (final candidate in candidates) {
     if (used.contains(candidate)) continue;
-    final score = _agreement(tokens, tokenize(candidate.query));
+    final score = captionAgreement(tokens, tokenize(candidate.query));
     if (score > bestScore) {
       best = candidate;
       bestScore = score;
@@ -160,7 +160,7 @@ ParsedMealItem? _bestTarget(
 
 /// 0 unless at least half of [phrase] agrees with [name]; otherwise how much of
 /// the phrase, then of the name, is covered.
-double _agreement(Set<String> phrase, Set<String> name) {
+double captionAgreement(Set<String> phrase, Set<String> name) {
   if (phrase.isEmpty || name.isEmpty) return 0;
   final phraseHits = phrase
       .where(
@@ -187,8 +187,8 @@ List<ParsedMealItem>? _rescaled(
   List<ParsedMealItem> components,
   ParsedMealItem amount,
 ) {
-  final statedGrams = _grams(amount.quantity!, amount.unit);
-  if (statedGrams == null || statedGrams <= 0) return null;
+  final target = statedGrams(amount.quantity!, amount.unit);
+  if (target == null || target <= 0) return null;
   var total = 0.0;
   for (final component in components) {
     final grams = component.estimatedGrams;
@@ -196,7 +196,7 @@ List<ParsedMealItem>? _rescaled(
     total += grams;
   }
   if (total <= 0) return null;
-  final factor = statedGrams / total;
+  final factor = target / total;
   return [
     for (final component in components)
       ParsedMealItem(
@@ -211,9 +211,30 @@ List<ParsedMealItem>? _rescaled(
   ];
 }
 
-double? _grams(double quantity, String? unit) => switch (unit) {
+double? statedGrams(double quantity, String? unit) => switch (unit) {
   'g' || 'ml' || 'g/ml' => quantity,
   'oz' => quantity * _gramsPerOz,
   'fl.oz' => quantity * _mlPerFlOz,
   _ => null,
 };
+
+/// A weight the caption gives with no food beside it ("katsu wrap, 250 g"): a
+/// segment that is only an amount. It is the dish's weight.
+double? bareCaptionWeight(String caption) {
+  for (final segment in caption.split(RegExp(r'[;,\n]'))) {
+    final match = RegExp(
+      r'^\s*(\d+(?:[.,]\d+)?)\s*(kg|g|ml|l|oz|lb)\s*$',
+      caseSensitive: false,
+    ).firstMatch(segment);
+    if (match == null) continue;
+    final number = double.parse(match.group(1)!.replaceAll(',', '.'));
+    final grams = switch (match.group(2)!.toLowerCase()) {
+      'kg' || 'l' => number * 1000,
+      'oz' => number * _gramsPerOz,
+      'lb' => number * 453.59237,
+      _ => number,
+    };
+    if (grams > 0) return grams;
+  }
+  return null;
+}

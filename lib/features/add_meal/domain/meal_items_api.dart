@@ -38,30 +38,24 @@ final class MealPhotoContent extends MealContent {
   });
 }
 
-/// The text part that accompanies a photo. Short on purpose: the system
-/// prompt carries the rules, and this only has to say what the picture is
-/// for.
-const mealPhotoContentPrompt = 'List the foods in this photo.';
+/// The text part that accompanies a photo: the caption, or "none". The system
+/// prompt carries every rule, and tells the model the caption is context about
+/// the meal, not instructions.
+///
+/// One function for all three wire formats so the sentence cannot drift between
+/// providers.
+String mealPhotoPromptText(MealPhotoContent content) {
+  final caption = content.caption?.trim();
+  if (caption == null || caption.isEmpty) return 'Caption: none';
+  final bounded = caption.length > mealPhotoCaptionMaxChars
+      ? caption.substring(0, mealPhotoCaptionMaxChars)
+      : caption;
+  return 'Caption: $bounded';
+}
 
 /// Longest caption sent, in characters. A caption is a line of context, not a
 /// document; the field is bounded the same way on screen.
 const mealPhotoCaptionMaxChars = 300;
-
-/// The text part for [content]: [mealPhotoContentPrompt], plus the user's
-/// caption when there is one.
-///
-/// One function for all three wire formats so the sentence cannot drift
-/// between providers. The caption is quoted and labelled as the user's words;
-/// the system prompt tells the model to read it as context about the photo,
-/// not as instructions.
-String mealPhotoPromptText(MealPhotoContent content) {
-  final caption = content.caption?.trim();
-  if (caption == null || caption.isEmpty) return mealPhotoContentPrompt;
-  final bounded = caption.length > mealPhotoCaptionMaxChars
-      ? caption.substring(0, mealPhotoCaptionMaxChars)
-      : caption;
-  return '$mealPhotoContentPrompt\nThe user says about it: "$bounded"';
-}
 
 /// One forced tool: its name, what it is for, the schema it is held to and the
 /// answer budget. The clients render it; they do not choose it.

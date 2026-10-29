@@ -6,7 +6,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:opennutritracker/core/utils/ai_credential_storage.dart';
 import 'package:opennutritracker/features/add_meal/domain/meal_photo_interpreter.dart';
 import 'package:opennutritracker/features/add_meal/domain/usecase/read_meal_photo_usecase.dart';
-import 'package:opennutritracker/features/add_meal/domain/ai_per100_estimate.dart';
 import 'package:opennutritracker/features/add_meal/util/meal_text_parser.dart';
 
 class _MemoryStorage implements FlutterSecureStorage {
@@ -151,66 +150,14 @@ subject({
   );
 }
 
-const _macros = AiPer100Estimate(
-  kcal: 250,
-  proteinG: 12,
-  carbsG: 20,
-  fatG: 13,
-);
-
-const _dishWithMacros = MealTextParseResult(
-  items: [ParsedMealItem(query: 'fries', quantity: 100, aiPer100: _macros)],
-  errors: [],
-  dish: ParsedMealDish(
-    name: 'Wrap',
-    components: [
-      ParsedMealItem(query: 'tortilla', quantity: 70, unit: 'g', aiPer100: _macros),
-    ],
-  ),
-);
-
 void main() {
-  group('the model\'s own macros', () {
-    test('the caption goes to the interpreter', () async {
+  group('the caption', () {
+    test('goes to the interpreter', () async {
       final s = subject(apiKey: 'k', result: _oneItem);
 
       await s.useCase.read(_photo, caption: 'ate half');
 
       expect(s.interpreter.sawCaption, 'ate half');
-    });
-
-    test('are passed on while the fallback is on, which is the default', () async {
-      final s = subject(apiKey: 'k', result: _dishWithMacros);
-
-      final read = await s.useCase.read(_photo) as MealPhotoRead;
-
-      expect(read.result.dish!.components.single.aiPer100, _macros);
-      expect(read.result.items.single.aiPer100, _macros);
-    });
-
-    test('are dropped before anything downstream sees them when it is off', () async {
-      final s = subject(apiKey: 'k', result: _dishWithMacros);
-      await s.credentials.setEstimateFallbackEnabled(false);
-
-      final read = await s.useCase.read(_photo) as MealPhotoRead;
-
-      expect(read.result.dish!.components.single.aiPer100, isNull);
-      expect(read.result.items.single.aiPer100, isNull);
-      // Grouping and amounts are not what the setting is about.
-      expect(read.result.dish!.name, 'Wrap');
-      expect(read.result.dish!.components.single.quantity, 70);
-      expect(read.result.items.single.quantity, 100);
-    });
-
-    test('the setting survives being read back, and a wipe resets it', () async {
-      final s = subject(apiKey: 'k', result: _oneItem);
-      expect(await s.credentials.isEstimateFallbackEnabled(), isTrue);
-
-      await s.credentials.setEstimateFallbackEnabled(false);
-      expect(await s.credentials.isEstimateFallbackEnabled(), isFalse);
-
-      await s.credentials.clearAll();
-      expect(await s.credentials.isEstimateFallbackEnabled(), isTrue);
     });
   });
 

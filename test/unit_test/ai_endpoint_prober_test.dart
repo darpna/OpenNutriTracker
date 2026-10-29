@@ -63,20 +63,27 @@ String _forTool(String body, http.BaseRequest request) {
     if (call['name'] != mealItemsToolName) return body;
     final items = (jsonDecode(call['arguments'] as String) as Map)['items'];
     call['name'] = mealPhotoToolName;
+    final names = [
+      for (final item in items as List) (item as Map)['query'] as String,
+    ];
     call['arguments'] = jsonEncode({
-      'items': [
-        for (final item in items as List)
+      'dish': 'Probe dish',
+      'portion_g': names.length * 100,
+      'servings': 1,
+      'ingredients': [
+        for (final name in names)
           {
-            ...(item as Map),
+            'name': name,
             'grams': 100,
-            'per_100g': {
-              'kcal': 100,
-              'protein_g': 5,
-              'carbs_g': 10,
-              'fat_g': 3,
-            },
+            'kcal': 100,
+            'protein_g': 5,
+            'carbs_g': 10,
+            'fat_g': 3,
           },
       ],
+      'totals': {'grams': 0, 'kcal': 0, 'protein_g': 0, 'carbs_g': 0, 'fat_g': 0},
+      'confidence': 'medium',
+      'assumptions': <String>[],
     });
     return jsonEncode(decoded);
   } catch (_) {

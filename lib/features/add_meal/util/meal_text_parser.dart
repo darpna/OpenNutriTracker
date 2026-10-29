@@ -1,5 +1,6 @@
 import 'package:opennutritracker/core/utils/food_name_validator.dart';
 import 'package:opennutritracker/features/add_meal/domain/ai_per100_estimate.dart';
+import 'package:opennutritracker/features/add_meal/domain/photo_estimate.dart';
 
 /// Upper bound for a parsed quantity, matching the manual-entry check in
 /// meal_detail_bottom_sheet.dart.
@@ -194,10 +195,15 @@ class MealTextParseResult {
   /// [items] then holds whatever else was on the plate.
   final ParsedMealDish? dish;
 
+  /// Set only by the photo reader: the dish as a recipe, with the numbers for
+  /// this portion. When it is set the photo needs no food search at all.
+  final PhotoRecipeEstimate? estimate;
+
   const MealTextParseResult({
     required this.items,
     required this.errors,
     this.dish,
+    this.estimate,
   });
 
   bool get hasErrors => errors.isNotEmpty;
