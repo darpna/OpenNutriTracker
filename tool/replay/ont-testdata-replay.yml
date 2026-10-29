@@ -1,0 +1,112 @@
+# Lives in the PRIVATE repo darpna/ont-testdata, as .github/workflows/replay.yml.
+# It is committed here under tool/replay/ so it is reviewed with the harness, and
+# is inert in this repo: it is not under .github/workflows.
+#
+# Runs the app's real photo path on the photos in this private repo and uploads
+# what the app would have logged for each. Photos never leave the runner: the
+# artifact holds replay.json only (ids, captions, foods and numbers, no file
+# names), and an artifact of a private repo stays private.
+name: Replay photos
+
+on:
+  workflow_dispatch:
+    inputs:
+      day:
+        description: 'A folder under photos/ (e.g. 2026-10-28), or "all"'
+        type: string
+        default: all
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      # The private repo: photos/<day>/*.jpg|jpeg|png|heic, optional <name>.txt.
+      - name: Checkout test data
+        uses: actions/checkout@v7
+
+      # Public, so no token is needed. The ref is the branch the harness lives on.
+      - name: Checkout the app
+        uses: actions/checkout@v7
+        with:
+          repository: darpna/OpenNutriTracker
+          ref: darp
+          path: app
+
+      - name: Setup Java (Temurin)
+        uses: actions/setup-java@v6.1.0
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # The version the app pins, read from the app rather than copied here.
+      - name: Read the Flutter version
+        id: fvm
+        run: echo "version=$(jq -r .flutter app/.fvmrc)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ steps.fvm.outputs.version }}
+          channel: stable
+          cache: true
+
+      # Placeholders: the app's code needs the generated env file to compile,
+      # and none of its values are used by the replay.
+      - name: Generate .env
+        working-directory: app
+        run: |
+          cat > .env <<'EOF2'
+          SENTRY_DNS=""
+          SUPABASE_PROJECT_URL="https://placeholder.supabase.co"
+          SUPABASE_PROJECT_ANON_KEY="placeholder"
+          EOF2
+
+      - name: Install Flutter packages
+        working-directory: app
+        run: flutter pub get
+
+      - name: Generate code
+        working-directory: app
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      # Copies the chosen photos to a scratch folder, turning HEIC into JPEG
+      # (the harness decodes JPEG and PNG only). Quiet on purpose: file names
+      # can hold dates and places, so nothing here echoes one.
+      - name: Prepare the photos
+        env:
+          DAY: ${{ inputs.day }}
+        run: |
+          set +x
+          sudo apt-get install -y -qq libheif-examples > /dev/null
+          src=photos
+          if [ -n "$DAY" ] && [ "$DAY" != "all" ]; then src="photos/$DAY"; fi
+          if [ ! -d "$src" ]; then echo "::error::no such folder under photos/"; exit 1; fi
+          dest="$RUNNER_TEMP/replay_in"
+          mkdir -p "$dest"
+          cp -r "$src"/. "$dest"/
+          find "$dest" -type f \( -iname '*.heic' -o -iname '*.heif' \) | while read -r f; do
+            heif-convert -q 90 "$f" "${f%.*}.jpg" > /dev/null 2>&1 && rm -f "$f"
+          done
+          echo "photos: $(find "$dest" -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \) | wc -l)"
+
+      - name: Replay
+        working-directory: app
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          REPLAY_DIR: ${{ runner.temp }}/replay_in
+          REPLAY_OUT: ${{ github.workspace }}/replay.json
+          REPLAY_BASE_URL: https://api.groq.com/openai/v1
+          REPLAY_MODEL: qwen/qwen3.8-27b
+        run: flutter test tool/replay/replay_test.dart --reporter expanded
+
+      - name: Upload replay.json
+        uses: actions/upload-artifact@v7
+        with:
+          name: replay
+          path: replay.json
+          if-no-files-found: error
+          retention-days: 30
