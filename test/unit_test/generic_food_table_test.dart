@@ -171,5 +171,85 @@ void main() {
       expect(table.match(''), isNull);
       expect(table.match('  ,, '), isNull);
     });
+
+    // The names a bake-off of real photos missed or mismatched, and what each
+    // matches now. Latin binomials and brackets, and words for how a food was
+    // cut, are dropped before matching.
+    final fixed = <String, (String, double)>{
+      'Coriander (Coriandrum sativum)': (
+        'Coriander (cilantro) leaves, raw',
+        23,
+      ),
+      'Coriander (Coriandrum sativum), fresh': (
+        'Coriander (cilantro) leaves, raw',
+        23,
+      ),
+      'Fresh coriander': ('Coriander (cilantro) leaves, raw', 23),
+      'Turmeric, Curcuma longa, ground': ('Spices, turmeric, ground', 312),
+      'Onion, chopped': ('Onions, raw', 40),
+      'Chopped onion': ('Onions, raw', 40),
+      'Garlic, minced': ('Garlic, raw', 143),
+      'Ginger, fresh, minced': ('Ginger root, raw', 80),
+      'Cooked chickpeas': ('Chickpeas', 164),
+      'Coconut oil': ('Oil, coconut', 833),
+      'Ghee (clarified butter)': ('Butter, Clarified butter (ghee)', 900),
+    };
+    for (final entry in fixed.entries) {
+      test('"${entry.key}" matches ${entry.value.$1}', () {
+        final match = table.match(entry.key);
+
+        expect(match, isNotNull);
+        expect(match!.food.description, startsWith(entry.value.$1));
+        expect(match.food.kcal, closeTo(entry.value.$2, 0.5));
+      });
+    }
+
+    test('"Sauce, soy" picks peanut sauce on words alone, soy sauce through '
+        'the kcal gate', () {
+      expect(
+        table.match('Sauce, soy')!.food.description,
+        startsWith('Sauce, peanut'),
+      );
+
+      final gated = table.match(
+        'Sauce, soy',
+        accept: (food) => food.kcal <= 2 * 60 && food.kcal >= 60 / 2,
+      );
+      expect(gated!.food.description, startsWith('Soy sauce'));
+      expect(gated.food.kcal, lessThan(100));
+    });
+
+    test('"raw" or "cooked" the table never says for a food costs nothing', () {
+      // Garlic is only ever "raw" in the table; "cooked" is not a reason to
+      // miss it.
+      expect(table.match('Garlic, cooked')!.food.description, 'Garlic, raw');
+      // Rice is both, so the word still decides.
+      expect(
+        table.match('Rice, white, raw')!.food.description,
+        contains('raw'),
+      );
+    });
+  });
+
+  group('cleaning a name', () {
+    test('drops brackets, Latin binomials and how it was cut', () {
+      expect(cleanFoodName('Coriander (Coriandrum sativum)'), 'Coriander');
+      expect(
+        cleanFoodName('Turmeric, Curcuma longa, ground'),
+        'Turmeric, ground',
+      );
+      expect(cleanFoodName('Cumin [Cuminum cyminum] seeds'), 'Cumin seeds');
+      expect(cleanFoodName('Fresh mint, finely chopped'), 'mint');
+      expect(cleanFoodName('Onion, diced'), 'Onion');
+    });
+
+    test('keeps capitalised words that are not a genus', () {
+      expect(cleanFoodName('Chicken tikka'), 'Chicken tikka');
+      expect(cleanFoodName('Basmati rice'), 'Basmati rice');
+    });
+
+    test('never cleans a name down to nothing', () {
+      expect(cleanFoodName('Fresh'), 'Fresh');
+    });
   });
 }

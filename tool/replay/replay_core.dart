@@ -94,10 +94,109 @@ class ReplayItem {
   };
 }
 
+/// One ingredient row of a dish as the estimate settled it: its grams, its
+/// numbers per 100 g and where they came from (`db`, `ai` or `cache`).
+class ReplayRow {
+  final String name;
+  final String source;
+  final String? dbName;
+  final double grams;
+  final Per100g per100g;
+
+  const ReplayRow({
+    required this.name,
+    required this.source,
+    required this.dbName,
+    required this.grams,
+    required this.per100g,
+  });
+
+  factory ReplayRow.of(EstimatedIngredient i) => ReplayRow(
+    name: i.name,
+    source: i.source.name,
+    dbName: i.matchedName,
+    grams: i.grams,
+    per100g: i.per100g,
+  );
+
+  Map<String, Object?> toJson() => {
+    'name': name,
+    'source': source,
+    'db_name': dbName,
+    'grams': _round(grams),
+    'per100g': {
+      'kcal': _round(per100g.kcal),
+      'protein_g': _round(per100g.proteinG),
+      'carbs_g': _round(per100g.carbsG),
+      'fat_g': _round(per100g.fatG),
+    },
+    'kcal': _round(per100g.kcal * grams / 100),
+    'protein_g': _round(per100g.proteinG * grams / 100),
+    'carbs_g': _round(per100g.carbsG * grams / 100),
+    'fat_g': _round(per100g.fatG * grams / 100),
+  };
+}
+
+/// One dish of a photo, as the estimate read it.
+class ReplayDish {
+  final String name;
+  final double portionG;
+  final double servings;
+  final String confidence;
+  final List<String> assumptions;
+  final EstimateTotals grounded;
+  final EstimateTotals aiOnly;
+  final List<ReplayRow> rows;
+
+  const ReplayDish({
+    required this.name,
+    required this.portionG,
+    required this.servings,
+    required this.confidence,
+    required this.assumptions,
+    required this.grounded,
+    required this.aiOnly,
+    required this.rows,
+  });
+
+  factory ReplayDish.of(PhotoRecipeEstimate dish) => ReplayDish(
+    name: dish.dish,
+    portionG: dish.portionG,
+    servings: dish.servings,
+    confidence: dish.confidence.name,
+    assumptions: dish.assumptions,
+    grounded: dish.totals,
+    aiOnly: dish.aiOnly,
+    rows: [for (final i in dish.ingredients) ReplayRow.of(i)],
+  );
+
+  Map<String, Object?> toJson() => {
+    'name': name,
+    'portion_g': _round(portionG),
+    'servings': _round(servings),
+    'confidence': confidence,
+    'assumptions': assumptions,
+    'grounded': _totals(grounded),
+    'ai_only': _totals(aiOnly),
+    'rows': [for (final row in rows) row.toJson()],
+  };
+}
+
 /// What the app would have logged for one photo.
 class ReplayResult {
   final String id;
   final String? caption;
+
+  /// Which run of the photo this is, from 1, when the harness reads every
+  /// photo more than once to see whether the answers agree.
+  final int run;
+
+  /// The model that actually answered: the selected one, or the fallback's
+  /// when the selected one failed. Null when nothing answered.
+  final String? modelUsed;
+
+  /// Every dish the photo was read as, in order.
+  final List<ReplayDish> dishes;
 
   /// The dish the photo was read as, when it was one composed dish.
   final String? dish;
@@ -130,6 +229,9 @@ class ReplayResult {
   const ReplayResult({
     required this.id,
     required this.caption,
+    this.run = 1,
+    this.modelUsed,
+    this.dishes = const [],
     this.dish,
     this.items = const [],
     this.unmatched = const [],
@@ -159,6 +261,9 @@ class ReplayResult {
     'confidence': confidence,
     'grounded': _totals(grounded),
     'ai_only': _totals(aiOnly),
+    'run': run,
+    'model_used': modelUsed,
+    'dishes': [for (final dish in dishes) dish.toJson()],
   };
 }
 
@@ -181,6 +286,7 @@ ReplayResult resultFromLoaded({
   required String id,
   required String? caption,
   required BulkAddLoadedState state,
+  int run = 1,
 }) {
   final items = <ReplayItem>[];
   final unmatched = <String>[];
@@ -209,15 +315,26 @@ ReplayResult resultFromLoaded({
       ),
     );
   }
-  final estimate = state.dish?.estimate;
+  final estimate = state.photoEstimate;
+  final dishes = estimate?.dishes ?? const <PhotoRecipeEstimate>[];
   return ReplayResult(
     id: id,
     caption: caption,
-    dish: state.dish?.name,
+    run: run,
+    modelUsed: estimate?.model,
+    dishes: [for (final dish in dishes) ReplayDish.of(dish)],
+    // The fields from before dishes were a list: the first dish's name, and
+    // the whole plate's portion and totals. Confidence is the plate's lowest.
+    dish: state.dishes.firstOrNull?.name,
     items: items,
     unmatched: unmatched,
-    portionG: estimate?.portionG,
-    confidence: estimate?.confidence.name,
+    portionG: estimate?.totals.grams,
+    confidence: dishes.isEmpty
+        ? null
+        : dishes
+              .map((d) => d.confidence)
+              .reduce((a, b) => a.index >= b.index ? a : b)
+              .name,
     grounded: estimate?.totals,
     aiOnly: estimate?.aiOnly,
   );
@@ -228,9 +345,15 @@ String encodeReplay({
   required String model,
   required String baseUrl,
   required List<ReplayResult> results,
+  int runs = 1,
+  String? fallbackModel,
+  String? fallbackBaseUrl,
 }) => const JsonEncoder.withIndent('  ').convert({
   'model': model,
   'base_url': baseUrl,
+  'runs': runs,
+  'fallback_model': fallbackModel,
+  'fallback_base_url': fallbackBaseUrl,
   'photos': [for (final result in results) result.toJson()],
 });
 

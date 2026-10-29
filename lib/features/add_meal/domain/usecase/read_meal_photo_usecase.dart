@@ -1,5 +1,6 @@
 import 'package:logging/logging.dart';
 import 'package:opennutritracker/core/utils/ai_credential_storage.dart';
+import 'package:opennutritracker/core/utils/ai_model_catalogue.dart';
 import 'package:opennutritracker/features/add_meal/domain/meal_photo_interpreter.dart';
 import 'package:opennutritracker/features/add_meal/util/meal_text_parser.dart';
 
@@ -83,7 +84,9 @@ final class MealPhotoFailed extends MealPhotoReadResult {
   const MealPhotoFailed(this.failure, {this.statusCode, this.providerMessage});
 }
 
-/// Reads a meal photo, when the user has asked for that.
+/// Reads a meal photo, when the user has asked for that, on the selected
+/// provider and — when that one times out, rate-limits or fails on its side —
+/// once more on the fallback provider, if one is configured.
 ///
 /// The sibling of [ReadMealTextUseCase], with the opposite failure policy and
 /// for a good reason. Text always has the deterministic parser underneath, so
@@ -119,43 +122,21 @@ class ReadMealPhotoUseCase {
       final result = await _interpreterFactory(
         selection,
       ).interpret(photo, localeCode: localeCode, caption: caption);
-      return MealPhotoRead(result);
+      return MealPhotoRead(_withModel(result, modelOf(selection)));
     } on MealInterpreterException catch (e) {
       _log.info('Photo interpreter failed: ${e.reason}');
       if (e.failure == MealInterpreterFailure.unsupported) {
         await _retractPhotoPass(selection);
       }
-      // The provider answered with an error (a status, or an error message in
-      // a 200). Of the kinds it can arrive as, only these two say nothing
-      // about the cause, so they become `providerError` instead of "bad
-      // image" or "check your connection".
-      final fromProvider = e.statusCode != null || e.providerMessage != null;
-      final failure = switch (e.failure) {
-        MealInterpreterFailure.auth => MealPhotoFailure.auth,
-        MealInterpreterFailure.rejected =>
-          fromProvider
-              ? MealPhotoFailure.providerError
-              : MealPhotoFailure.rejectedImage,
-        MealInterpreterFailure.unsupported => MealPhotoFailure.unsupported,
-        MealInterpreterFailure.billing => MealPhotoFailure.billing,
-        MealInterpreterFailure.insecureDestination =>
-          MealPhotoFailure.insecureDestination,
-        // Reachable for the same reason and still folded on purpose: a
-        // server the user runs is the only configuration that reports a
-        // timeout as its own kind of failure, and "try again" is honest
-        // advice for one — a cold Ollama can spend the whole budget loading
-        // the model. #774.
-        MealInterpreterFailure.timeout => MealPhotoFailure.transient,
-        MealInterpreterFailure.transient =>
-          fromProvider
-              ? MealPhotoFailure.providerError
-              : MealPhotoFailure.transient,
-      };
-      return MealPhotoFailed(
-        failure,
-        statusCode: e.statusCode,
-        providerMessage: e.providerMessage,
-      );
+      if (shouldFallBack(e)) {
+        final fallen = await _readWithFallback(
+          photo,
+          localeCode: localeCode,
+          caption: caption,
+        );
+        if (fallen != null) return fallen;
+      }
+      return _failed(e);
     } catch (e, stackTrace) {
       // An interpreter that throws something unexpected is a bug. Report it
       // as a transient failure rather than as a rejected key — telling the
@@ -164,6 +145,104 @@ class ReadMealPhotoUseCase {
       _log.severe('Photo interpreter failed unexpectedly', e, stackTrace);
       return const MealPhotoFailed(MealPhotoFailure.transient);
     }
+  }
+
+  /// The failures a fallback provider is asked to cover: the selected one
+  /// stopped answering in time, is rate limiting, or failed on its own side.
+  /// Google's endpoint answered 503 to two of six photos in one bake-off.
+  ///
+  /// Not a 400 or a 401: a request the provider refused, or a key it does not
+  /// know, says something about the request or the account that another
+  /// provider would not fix, and the user should hear about it.
+  static bool shouldFallBack(MealInterpreterException e) {
+    if (e.timedOut || e.failure == MealInterpreterFailure.timeout) return true;
+    final status = e.statusCode;
+    return status != null && (status == 429 || (status >= 500 && status < 600));
+  }
+
+  /// One more try, on the fallback, or null when there is none or it failed
+  /// too — then the selected provider's failure is what the user sees, since
+  /// that is the provider they chose.
+  Future<MealPhotoReadResult?> _readWithFallback(
+    MealPhoto photo, {
+    String? localeCode,
+    String? caption,
+  }) async {
+    final AiSelection? fallback;
+    try {
+      fallback = await _credentials.readFallbackSelection();
+    } catch (e, stackTrace) {
+      _log.severe('Could not read the fallback provider', e, stackTrace);
+      return null;
+    }
+    if (fallback == null) return null;
+
+    final model = modelOf(fallback);
+    try {
+      final result = await _interpreterFactory(
+        fallback,
+      ).interpret(photo, localeCode: localeCode, caption: caption);
+      _log.info('Photo read by the fallback provider');
+      final estimate = result.estimate;
+      return MealPhotoRead(
+        result.withEstimate(
+          estimate?.withModel(model).withAssumption('Estimated with $model.'),
+        ),
+      );
+    } catch (e) {
+      // Never surfaced: the fallback is a second chance, not a second error.
+      _log.info('The fallback provider failed too');
+      return null;
+    }
+  }
+
+  /// The model a request to [selection] names.
+  static String? modelOf(AiSelection selection) =>
+      AiModelCatalogue.resolve(selection.provider, selection.modelId)?.id ??
+      selection.modelId;
+
+  static MealTextParseResult _withModel(
+    MealTextParseResult result,
+    String? model,
+  ) {
+    final estimate = result.estimate;
+    return estimate == null
+        ? result
+        : result.withEstimate(estimate.withModel(model));
+  }
+
+  MealPhotoFailed _failed(MealInterpreterException e) {
+    // The provider answered with an error (a status, or an error message in a
+    // 200). Of the kinds it can arrive as, only these two say nothing about
+    // the cause, so they become `providerError` instead of "bad image" or
+    // "check your connection".
+    final fromProvider = e.statusCode != null || e.providerMessage != null;
+    final failure = switch (e.failure) {
+      MealInterpreterFailure.auth => MealPhotoFailure.auth,
+      MealInterpreterFailure.rejected =>
+        fromProvider
+            ? MealPhotoFailure.providerError
+            : MealPhotoFailure.rejectedImage,
+      MealInterpreterFailure.unsupported => MealPhotoFailure.unsupported,
+      MealInterpreterFailure.billing => MealPhotoFailure.billing,
+      MealInterpreterFailure.insecureDestination =>
+        MealPhotoFailure.insecureDestination,
+      // Reachable for the same reason and still folded on purpose: a
+      // server the user runs is the only configuration that reports a
+      // timeout as its own kind of failure, and "try again" is honest
+      // advice for one — a cold Ollama can spend the whole budget loading
+      // the model. #774.
+      MealInterpreterFailure.timeout => MealPhotoFailure.transient,
+      MealInterpreterFailure.transient =>
+        fromProvider
+            ? MealPhotoFailure.providerError
+            : MealPhotoFailure.transient,
+    };
+    return MealPhotoFailed(
+      failure,
+      statusCode: e.statusCode,
+      providerMessage: e.providerMessage,
+    );
   }
 
   /// Forgets that photos ever worked here, so the camera stops being offered

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
@@ -81,6 +82,9 @@ class AnthropicMealItemsApi implements MealItemsApi, MealPhotoToolApi {
     final body = jsonEncode({
       'model': model,
       'max_tokens': spec.maxTokens,
+      // The same photo should read the same way twice. `top_p` is left at its
+      // default: current Claude models refuse a request that sets both.
+      'temperature': 0,
       'system': system,
       'tools': [
         {
@@ -110,6 +114,10 @@ class AnthropicMealItemsApi implements MealItemsApi, MealPhotoToolApi {
             body: body,
           )
           .timeout(timeout);
+    } on TimeoutException {
+      // Still `transient`, as it always was here; marked so a fallback
+      // provider can be asked instead.
+      throw const MealInterpreterException('request timed out', timedOut: true);
     } catch (e) {
       // Deliberately not logging `e`: a socket error can carry the request
       // URL and, on some platforms, part of the payload — which for the

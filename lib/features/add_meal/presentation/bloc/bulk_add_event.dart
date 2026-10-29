@@ -156,12 +156,22 @@ class DeleteRowCustomPortionEvent extends BulkAddEvent {
   List<Object?> get props => [rowIndex, portionId];
 }
 
-/// Opens or closes the dish row's list of components.
+/// Opens or closes dish [dishIndex]'s list of components.
 class ToggleDishExpandedEvent extends BulkAddEvent {
-  const ToggleDishExpandedEvent();
+  final int dishIndex;
+
+  const ToggleDishExpandedEvent([this.dishIndex = 0]);
+
+  @override
+  List<Object?> get props => [dishIndex];
 }
 
-/// Skips every component of the dish, or includes them all again.
+/// Skips every component of dish [dishIndex], or includes them all again.
 class ToggleDishSkippedEvent extends BulkAddEvent {
-  const ToggleDishSkippedEvent();
+  final int dishIndex;
+
+  const ToggleDishSkippedEvent([this.dishIndex = 0]);
+
+  @override
+  List<Object?> get props => [dishIndex];
 }

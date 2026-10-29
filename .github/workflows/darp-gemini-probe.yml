@@ -1,0 +1,90 @@
+name: Darp Gemini probe
+
+# Fork-only diagnostic. Asks Google's OpenAI-compatible endpoint what the app's
+# setup check asks, through the real client, schema, prompts and validators,
+# and logs the request (key removed, image bytes elided), the raw status and
+# body, what was parsed, and what was refused. Manual (or a push to its branch); it spends a few
+# requests on the GEMINI_API_KEY secret and nothing else.
+on:
+  # A manual run can only start from a workflow file on the default branch, so
+  # while this is being worked on it also runs on every push to its own branch.
+  push:
+    branches: [feat/gemini-compat]
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'Model id sent to Gemini'
+        type: string
+        default: 'gemini-3.8-flash'
+      mode:
+        description: 'Which probe to run'
+        type: choice
+        options: [both, text, photo]
+        default: both
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    name: probe (${{ matrix.model }}, ${{ matrix.variant }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # `baseline` is what the app sent before the Gemini fix; `fixed` is
+        # what it sends now. Comparing the two is how the cause is confirmed.
+        variant: [baseline, fixed]
+        # A push runs both models; a manual run runs the one asked for.
+        model: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.model) || '["gemini-3.8-flash","gemini-3.5-flash-lite"]') }}
+    steps:
+      # Without the secret there is nothing to probe. Say so and stop green,
+      # rather than fail a run that could not have told us anything.
+      - name: Is the key available?
+        id: key
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Gemini probe skipped::Add a GEMINI_API_KEY repository secret (Settings → Secrets and variables → Actions), then run this workflow again."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout code
+        if: steps.key.outputs.present == 'true'
+        uses: actions/checkout@v7
+
+      - name: Setup Flutter + cache packages
+        if: steps.key.outputs.present == 'true'
+        uses: ./.github/actions/setup-flutter-cache
+
+      # Same placeholders as the other fork workflows: the app's code needs the
+      # generated env file to compile, and none of its values are used here.
+      - name: Generate .env
+        if: steps.key.outputs.present == 'true'
+        run: |
+          cat > .env <<'EOF2'
+          SENTRY_DNS=""
+          SUPABASE_PROJECT_URL="https://placeholder.supabase.co"
+          SUPABASE_PROJECT_ANON_KEY="placeholder"
+          EOF2
+
+      - name: Install Flutter packages
+        if: steps.key.outputs.present == 'true'
+        run: flutter pub get
+
+      - name: Generate code
+        if: steps.key.outputs.present == 'true'
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Probe Gemini
+        if: steps.key.outputs.present == 'true'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ matrix.model }}
+          PROBE_MODE: ${{ inputs.mode || 'both' }}
+          PROBE_VARIANT: ${{ matrix.variant }}
+        run: flutter test tool_test/gemini_probe_test.dart --reporter expanded

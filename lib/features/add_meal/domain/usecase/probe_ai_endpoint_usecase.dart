@@ -90,10 +90,18 @@ class AiEndpointProber {
   /// directory, neither of which exists outside a Flutter app.
   final Future<MealPhoto?> Function(MealPhotoFormat format) _sampleImage;
 
+  /// Replaces how the client for a selection is built. For a diagnostic that
+  /// needs to send a different request than the app would; the app never sets
+  /// it.
+  final MealItemsApi Function(http.Client client, AiSelection selection)?
+  _apiOverride;
+
   AiEndpointProber(
     this._client, {
     Future<MealPhoto?> Function(MealPhotoFormat format)? sampleImage,
-  }) : _sampleImage = sampleImage ?? loadProbePhoto;
+    MealItemsApi Function(http.Client client, AiSelection selection)? apiFor,
+  }) : _sampleImage = sampleImage ?? loadProbePhoto,
+       _apiOverride = apiFor;
 
   /// Asks [selection]'s endpoint for a meal line and for a photograph, and
   /// reports what each produced.
@@ -167,10 +175,11 @@ class AiEndpointProber {
       ).interpret(photo, localeCode: localeCode);
       // A recipe counts by its ingredients: the sliced loaf the probe sends
       // comes back as a dish with parts, which is a usable answer.
-      return _verdictFor(
-        result.items.length + (result.estimate?.ingredients.length ?? 0),
-        'photo',
-      );
+      final ingredients = [
+        for (final dish in result.estimate?.dishes ?? const [])
+          ...dish.ingredients,
+      ];
+      return _verdictFor(result.items.length + ingredients.length, 'photo');
     } on MealInterpreterException catch (e) {
       return _verdictForFailure(e, 'photo');
     } catch (e, stackTrace) {
@@ -180,6 +189,7 @@ class AiEndpointProber {
   }
 
   MealItemsApi _apiFor(AiSelection selection) =>
+      _apiOverride?.call(_client, selection) ??
       mealItemsApiFor(_client, selection, timeout: aiEndpointProbeTimeout);
 
   /// **At least one item**, not merely a well-formed reply.

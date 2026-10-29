@@ -844,9 +844,9 @@ void main() {
     test('the dish is one item over its component rows', () async {
       final state = await read(const {}, wrap());
 
-      expect(state.dish!.name, 'Katsu chicken wrap');
-      expect(state.dish!.componentCount, 3);
-      expect(state.dishRows, hasLength(3));
+      expect(state.dishes.single.name, 'Katsu chicken wrap');
+      expect(state.dishes.single.componentCount, 3);
+      expect(state.dishRows(0), hasLength(3));
       expect(state.plateRows, isEmpty);
       expect(state.loggableCount, 1, reason: 'one dish, however many parts');
     });
@@ -880,8 +880,8 @@ void main() {
       expect(state.rows[1].amountText, '120');
       expect(state.rows[1].meal!.nutriments.energyKcal100, 250);
       // The dish row's own numbers are sums over the parts.
-      expect(state.dishWeightG, 210);
-      expect(state.dishKcal, closeTo(210 * 2.5, 1e-9));
+      expect(state.dishWeightG(0), 210);
+      expect(state.dishKcal(0), closeTo(210 * 2.5, 1e-9));
     });
 
     test('a good database match keeps its numbers and the estimated amount', () async {
@@ -952,7 +952,7 @@ void main() {
       expect(state.rows[1].amountText, '150');
       expect(state.rows[1].isEstimated, isFalse);
       expect(state.rows[0].isEstimated, isTrue, reason: 'the others are not touched');
-      expect(state.dishWeightG, 70 + 150 + 20);
+      expect(state.dishWeightG(0), 70 + 150 + 20);
     });
 
     test('a portion the matched food lacks falls back to the model\'s grams', () async {
@@ -1015,13 +1015,13 @@ void main() {
 
       bloc.add(const ToggleDishSkippedEvent());
       var state = await bloc.stream.first as BulkAddLoadedState;
-      expect(state.dishRows.every((r) => r.skipped), isTrue);
+      expect(state.dishRows(0).every((r) => r.skipped), isTrue);
       expect(state.plateRows.single.skipped, isFalse);
       expect(state.loggableCount, 1);
 
       bloc.add(const ToggleDishSkippedEvent());
       state = await bloc.stream.first as BulkAddLoadedState;
-      expect(state.dishRows.every((r) => !r.skipped), isTrue);
+      expect(state.dishRows(0).every((r) => !r.skipped), isTrue);
       expect(state.loggableCount, 2);
     });
 
@@ -1033,11 +1033,11 @@ void main() {
       bloc.add(ReadMealPhotoEvent(photo: _photo, usesImperialUnits: false));
       final loaded = await bloc.stream.firstWhere((s) => s is BulkAddLoadedState)
           as BulkAddLoadedState;
-      expect(loaded.dish!.expanded, isFalse);
+      expect(loaded.dishes.single.expanded, isFalse);
 
       bloc.add(const ToggleDishExpandedEvent());
       final open = await bloc.stream.first as BulkAddLoadedState;
-      expect(open.dish!.expanded, isTrue);
+      expect(open.dishes.single.expanded, isTrue);
     });
 
     test('the caption reaches the reader', () async {
@@ -1060,7 +1060,7 @@ void main() {
         ),
       );
 
-      expect(state.dish, isNull);
+      expect(state.dishes, isEmpty);
       expect(state.rows.single.amountText, '2');
       expect(state.rows.single.isEstimated, isFalse);
       expect(state.rows.single.usesAiEstimate, isFalse);

@@ -60,14 +60,20 @@ guarantee you cannot verify locally is a guarantee held by somebody else.
 
 **This fork has one deliberate exception, on the photo path only.** A photograph is read with a
 second schema, [`mealPhotoToolSchema`](../lib/features/add_meal/domain/meal_photo_reply.dart), which
-*does* carry nutrition: the dish read as its recipe, with `grams`, `kcal`, `protein_g`, `carbs_g` and
-`fat_g` for every ingredient. Code, not the model, then settles the numbers
-([`finalizeEstimate`](../lib/features/add_meal/domain/photo_estimate_processor.dart)): totals are the sum of
-the ingredients, grams are scaled to the stated portion, energy is re-derived from 4/4/9 when it
-disagrees by more than 10%, and each ingredient is matched against a bundled offline USDA table
-([`generic_food_table.dart`](../lib/features/add_meal/util/generic_food_table.dart)). A match keeps the model's
-grams and takes the table's per-100 g values (`source: db`); a miss keeps the model's numbers and the row
-wears a sparkle (`source: ai`). No food database is searched on this path. The typed path is untouched and
+*does* carry nutrition: every dish on the plate read as its recipe, with `grams` and `per100g`
+(`kcal`, `protein_g`, `carbs_g`, `fat_g` in 100 g) for every ingredient. Code, not the model, then
+settles the numbers ([`finalizeEstimate`](../lib/features/add_meal/domain/photo_estimate_processor.dart)):
+the model's per-100 g values go through a sanity band (kcal 0-900, within 15% of 4/4/9 or recomputed
+from the macros, oils/ghee/butter 700-900 or the table's closest fat), and each ingredient is matched
+against a bundled offline USDA table
+([`generic_food_table.dart`](../lib/features/add_meal/util/generic_food_table.dart)) — after dropping Latin
+binomials, brackets and words like *chopped* or *fresh*, and refusing a row whose kcal/100 g is more
+than 2x the model's. A match keeps the model's grams and takes the table's per-100 g values
+(`source: db`); a miss takes what this device settled on for that food name the first time it saw it
+(`source: cache`, a Hive box, first value wins, a table value replaces a model one); a food seen for
+the first time keeps the checked model numbers (`source: ai`) and is remembered. Model-made rows wear a
+sparkle. The portion is the sum of the ingredients; nothing is scaled to a portion the model stated.
+No food database is searched on this path. The typed path is untouched and
 still speaks the schema with no nutrition fields. Upstream's rule is "numbers only from the database";
 this exception is why the section above is qualified, and what to drop to restore it.
 
@@ -165,12 +171,17 @@ would have had with the feature switched off. On the photo path there is nothing
 it becomes the one line the screen has for it: *Couldn't read the photo. Check your connection and
 try again.* Right for the common cause of a transient failure, and wrong for this one.
 
-**Being cut off is not a case the app recognises.** The answer is capped at 1024 tokens, which is
+**Being cut off is recognised in one case only.** The answer is capped at 1024 tokens, which is
 roomy for a short list of short strings and short enough that a runaway is stopped early, and no
 client reads the flag a provider sets when that cap is reached. A truncated reply is therefore
 judged only on whether what arrived still parses: losing a closing brace makes it malformed and
 lands it with everything above, while a partial list that parses is believed as though it were the
-whole answer.
+whole answer. The exception is the OpenAI-compatible client seeing `finish_reason: "length"` with
+no tool call at all: the budget went on something other than the answer (a thinking model's
+reasoning), which is `transient` rather than the `unsupported` a missing tool call would otherwise
+mean. Google's endpoint, where this happens, also gets a larger budget and `reasoning_effort: low`,
+and its tool schema without `additionalProperties` — see
+[`gemini_compat.dart`](../lib/features/add_meal/data/gemini_compat.dart).
 
 **None of the three clients puts what you typed, or your photograph, into a log or an error
 string.** A socket error can carry the request URL and, on some platforms, part of the payload,
@@ -264,13 +275,24 @@ identical either way.
 
 **What comes back from a photo is a recipe, estimated.** The model gets one system prompt
 ([`mealPhotoSystemPrompt`](../lib/features/add_meal/domain/meal_photo_reply.dart)) for every provider and the
-user message `Caption: <text or none>`. It names the dish, estimates the portion in grams, recalls the
-standard recipe including unseen ingredients (oil, salt, sauces) and returns up to 20 ingredients with
-grams and macros, a confidence (`high`/`medium`/`low`) and up to six assumptions. The review screen shows
-the dish with its totals, one editable row per ingredient in grams, a sparkle on ingredients whose
-numbers are the model's own, the confidence and assumptions (collapsed), and the footer *AI estimates
-can be wrong, check before logging*. An empty ingredient list is read as "no food", not as a failure.
-Ingredients over 3 kg are dropped.
+user message `Caption: <text or none>`. It lists every distinct dish and side (rice, bread, raita and a
+second curry are separate dishes, never folded into a main) — up to six — and for each recalls the
+standard recipe including unseen ingredients (oil, salt, sauces, a curry's stock or water) and returns
+up to 20 ingredients with grams and per-100 g numbers, a confidence (`high`/`medium`/`low`) and up to
+four assumptions. Requests carry `temperature: 0` (and `top_p: 1` on the OpenAI-compatible client) so
+the same photo reads the same way twice; OpenRouter and the direct OpenAI client send neither, because
+their catalogued reasoning models refuse them.
+
+Code then holds every dish to the recipe anchors, adding an assumption line each time one acts: spices
+and herbs 0.5-3 g each and salt 0.5-2 g; oil, ghee and butter at most 8% of the dish's grams unless it
+is deep-fried; a protein the dish is named after (chicken, mutton, lamb, fish, prawn, egg, paneer, tofu,
+beef, pork) at least 20% of it; a soup or curry with no liquid base listed is flagged. A weight the
+caption states is never moved by an anchor.
+
+The review screen shows one header row per dish with its totals, each opening onto one editable row per
+ingredient in grams, a sparkle on ingredients whose numbers are the model's own, the confidence and
+assumptions (collapsed), and the footer *AI estimates can be wrong, check before logging*. An empty dish
+list is read as "no food", not as a failure. Ingredients over 3 kg are dropped.
 
 **A caption wins.** Photo first, caption while it prepares: right after the photo is picked (camera or
 gallery) a sheet shows its thumbnail and a caption field with the keyboard up
@@ -283,15 +305,20 @@ still removes the picker's cache copy and the encoded bytes are dropped
 travels with the image as plain text and is never logged. A weight the caption states for the dish ("katsu wrap, 250 g") wins over the model's portion and
 rescales the ingredients; "ate half" and the like are left to the model, which was given the caption.
 
-**A dish is one row, and it can be exploded.** The result is the dish with its ingredients showing.
-Logging stores it as a recipe (`SavePhotoDishUseCase`): ingredients in grams, one serving, tagged
-`ai-photo`. A later photo of a dish with the same name updates that recipe instead of adding a copy; a
+**A dish is one row, and it can be exploded.** A plate of one dish opens with its ingredients showing;
+a plate of several starts with each dish closed. Logging stores each dish as its own recipe
+(`SavePhotoDishUseCase`): ingredients in grams, one serving, tagged `ai-photo`. A later photo of a dish with the same name updates that recipe instead of adding a copy; a
 recipe the user wrote by hand under that name is never touched.
 
 **A reply that does not fit is an error, not a second request.** The photo reply is validated strictly
 ([`mealPhotoEstimateFromJson`](../lib/features/add_meal/domain/meal_photo_reply.dart)): wrong shape, no
-dish name, no ingredient surviving — all refuse, as does a body that will not decode. There is one
-call per *Analyse*; failures a second request cannot change are not retried either.
+dish surviving — all refuse, as does a body that will not decode; a bad dish among good ones is
+dropped. There is one call per *Analyse*; failures a second request cannot change are not retried
+either. The one exception is the **fallback provider** (optional, in AI settings: an OpenAI-compatible
+address, model and key, stored in the keystore beside the primary's): when the selected provider times
+out, answers 429 or answers 5xx, the photo is sent once to the fallback, and every dish it returns
+carries *Estimated with &lt;model&gt;.* in its assumptions. A 400 or 401 is never handed on. If the
+fallback fails too, the selected provider's failure is what the screen shows.
 
 ## Where a request goes
 
@@ -577,7 +604,8 @@ address**. An IPv4-only check would never have seen where the connection actuall
 | [`meal_text_interpreter.dart`](../lib/features/add_meal/domain/meal_text_interpreter.dart) | What "read this text" means, independent of provider |
 | [`meal_photo_interpreter.dart`](../lib/features/add_meal/domain/meal_photo_interpreter.dart) | The same for a photograph |
 | [`meal_photo_reply.dart`](../lib/features/add_meal/domain/meal_photo_reply.dart) | The photo schema, and reading its reply back strictly |
-| [`photo_estimate_processor.dart`](../lib/features/add_meal/domain/photo_estimate_processor.dart) | Totals, portion scaling, 4/4/9 check and table grounding of a photo estimate |
+| [`photo_estimate_processor.dart`](../lib/features/add_meal/domain/photo_estimate_processor.dart) | The sanity band, table grounding with the kcal gate, the name cache, and the recipe anchors |
+| [`food_number_cache.dart`](../lib/features/add_meal/domain/food_number_cache.dart) | First-value-wins per-100 g numbers by food name; Hive-backed in [`food_number_cache_data_source.dart`](../lib/features/add_meal/data/data_sources/food_number_cache_data_source.dart) |
 | [`generic_food_table.dart`](../lib/features/add_meal/util/generic_food_table.dart) | The bundled offline USDA table and its matcher |
 | [`ai_per100_estimate.dart`](../lib/features/add_meal/domain/ai_per100_estimate.dart) | A model's per-100 g macros, and the bounds that refuse an implausible set (typed-path fallback) |
 | [`caption_amounts.dart`](../lib/features/add_meal/util/caption_amounts.dart) | Letting an amount the caption states replace the model's estimate |
@@ -592,7 +620,7 @@ address**. An IPv4-only check would never have seen where the connection actuall
 | [`model_meal_text_interpreter.dart`](../lib/features/add_meal/data/model_meal_text_interpreter.dart) | Prompt and locale handling for text |
 | [`model_meal_photo_interpreter.dart`](../lib/features/add_meal/data/model_meal_photo_interpreter.dart) | The same for photos |
 | [`read_meal_text_usecase.dart`](../lib/features/add_meal/domain/usecase/read_meal_text_usecase.dart) | Model-or-parser policy, and which failures are worth reporting |
-| [`read_meal_photo_usecase.dart`](../lib/features/add_meal/domain/usecase/read_meal_photo_usecase.dart) | The same for photos, plus retracting a stale photo pass |
+| [`read_meal_photo_usecase.dart`](../lib/features/add_meal/domain/usecase/read_meal_photo_usecase.dart) | The same for photos, plus retracting a stale photo pass and the one retry on the fallback provider |
 | [`probe_ai_endpoint_usecase.dart`](../lib/features/add_meal/domain/usecase/probe_ai_endpoint_usecase.dart) | Running the two setup probes and ruling on each |
 | [`run_ai_endpoint_probe_usecase.dart`](../lib/features/add_meal/domain/usecase/run_ai_endpoint_probe_usecase.dart) | Probing and storing the verdict together |
 | [`meal_text_parser.dart`](../lib/features/add_meal/util/meal_text_parser.dart) | The deterministic parser, and the bounds every row is held to |

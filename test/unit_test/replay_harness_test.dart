@@ -144,6 +144,10 @@ void main() {
         'confidence',
         'grounded',
         'ai_only',
+        // Added with dishes as a list; everything above is as it was.
+        'run',
+        'model_used',
+        'dishes',
       ]);
       final item = (json['items'] as List).first as Map;
       expect(item.keys, [
@@ -238,8 +242,128 @@ void main() {
       );
       final decoded = jsonDecode(text) as Map;
 
-      expect(decoded.keys, ['model', 'base_url', 'photos']);
+      expect(decoded.keys, [
+        'model',
+        'base_url',
+        'runs',
+        'fallback_model',
+        'fallback_base_url',
+        'photos',
+      ]);
       expect((decoded['photos'] as List).single['id'], 'a9993e3647');
+    });
+  });
+
+  group('a plate of several dishes', () {
+    EstimatedIngredient row(
+      String name,
+      double grams,
+      double kcal,
+      IngredientSource source, [
+      String? matched,
+    ]) => EstimatedIngredient(
+      name: name,
+      grams: grams,
+      per100g: Per100g(kcal: kcal, proteinG: 10, carbsG: 20, fatG: 5),
+      source: source,
+      matchedName: matched,
+    );
+    PhotoRecipeEstimate dish(
+      String name,
+      EstimateConfidence confidence,
+      List<EstimatedIngredient> rows,
+    ) => PhotoRecipeEstimate(
+      dish: name,
+      servings: 1,
+      ingredients: rows,
+      confidence: confidence,
+      assumptions: const ['Estimated with qwen/qwen3.8-27b.'],
+      aiOnly: PhotoRecipeEstimate.sumOf(rows),
+    );
+    final estimate = PhotoMealEstimate(
+      model: 'qwen/qwen3.8-27b',
+      dishes: [
+        dish('Idli', EstimateConfidence.high, [
+          row('Rice, cooked', 110, 130, IngredientSource.db, 'Rice, white'),
+          row('Urad dal', 48, 105, IngredientSource.ai),
+        ]),
+        dish('Sambar', EstimateConfidence.low, [
+          row('Pigeon peas', 60, 121, IngredientSource.cache),
+        ]),
+      ],
+    );
+
+    Future<ReplayResult> replay() async {
+      final bloc = BulkAddBloc(
+        ResolveParsedMealsUseCase(_Search(const {})),
+        ReadMealTextUseCase(
+          AiCredentialStorage(_Storage()),
+          (_) => throw StateError('unused'),
+        ),
+        _Reader(
+          MealPhotoRead(
+            MealTextParseResult(
+              items: const [],
+              errors: const [],
+              estimate: estimate,
+            ),
+          ),
+        ),
+      );
+      bloc.add(
+        ReadMealPhotoEvent(
+          photo: MealPhoto(bytes: _bytes, mediaType: 'image/jpeg'),
+          usesImperialUnits: false,
+          localeCode: 'en',
+        ),
+      );
+      final state =
+          await bloc.stream.firstWhere((s) => s is BulkAddLoadedState)
+              as BulkAddLoadedState;
+      return resultFromLoaded(id: 'x', caption: null, state: state, run: 2);
+    }
+
+    test('reports every dish with its rows, sources and per-100 g', () async {
+      final json = (await replay()).toJson();
+
+      expect(json['run'], 2);
+      expect(json['model_used'], 'qwen/qwen3.8-27b');
+      final dishes = json['dishes'] as List;
+      expect(dishes.map((d) => (d as Map)['name']), ['Idli', 'Sambar']);
+      final idli = dishes.first as Map;
+      expect(idli.keys, [
+        'name',
+        'portion_g',
+        'servings',
+        'confidence',
+        'assumptions',
+        'grounded',
+        'ai_only',
+        'rows',
+      ]);
+      expect(idli['portion_g'], 158.0);
+      final rows = idli['rows'] as List;
+      expect(rows.map((r) => (r as Map)['source']), ['db', 'ai']);
+      final rice = rows.first as Map;
+      expect(rice['db_name'], 'Rice, white');
+      expect(rice['per100g'], {
+        'kcal': 130.0,
+        'protein_g': 10.0,
+        'carbs_g': 20.0,
+        'fat_g': 5.0,
+      });
+      expect(rice['kcal'], 143.0);
+      expect(((dishes.last as Map)['rows'] as List).single['source'], 'cache');
+    });
+
+    test('the older fields describe the whole plate', () async {
+      final json = (await replay()).toJson();
+
+      expect(json['dish'], 'Idli');
+      expect(json['portion_g'], 218.0);
+      expect(json['confidence'], 'low', reason: 'the lowest of the dishes');
+      expect((json['grounded'] as Map)['grams'], 218.0);
+      expect(json['items'], hasLength(3));
     });
   });
 

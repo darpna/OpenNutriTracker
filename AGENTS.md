@@ -312,6 +312,7 @@ Named routes are defined in `NavigationOptions` and registered in `main.dart`. T
 | `WaterIntakeBox`               | `WaterIntakeDBO`            | Water log entries powering the home chip                             |
 | `FastingBox`                   | `FastingSessionDBO`         | Fasting sessions (current and historical) for the timer              |
 | `FavouriteMealBox`             | `FavouriteMealDBO`          | Starred foods and meals for the add-food Favourites tab              |
+| `FoodNumberCacheBox`           | `String` (JSON)             | Per-100 g numbers the photo estimate settled on, by food name        |
 | `CustomPortionBox`             | `CustomPortionDBO`          | Servings the user named for a food ("1 bowl = 250 g"), shared by all profiles |
 
 When adding a new `@HiveType`, assign a unique `typeId`. Check all existing DBOs to avoid collisions — IDs are currently scattered across 0–30+.

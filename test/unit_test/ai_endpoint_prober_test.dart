@@ -67,23 +67,29 @@ String _forTool(String body, http.BaseRequest request) {
       for (final item in items as List) (item as Map)['query'] as String,
     ];
     call['arguments'] = jsonEncode({
-      'dish': 'Probe dish',
-      'portion_g': names.length * 100,
-      'servings': 1,
-      'ingredients': [
-        for (final name in names)
+      'dishes': [
+        if (names.isNotEmpty)
           {
-            'name': name,
-            'grams': 100,
-            'kcal': 100,
-            'protein_g': 5,
-            'carbs_g': 10,
-            'fat_g': 3,
+            'name': 'Probe dish',
+            'portion_g': names.length * 100,
+            'servings': 1,
+            'ingredients': [
+              for (final name in names)
+                {
+                  'name': name,
+                  'grams': 100,
+                  'per100g': {
+                    'kcal': 87,
+                    'protein_g': 5,
+                    'carbs_g': 10,
+                    'fat_g': 3,
+                  },
+                },
+            ],
+            'confidence': 'medium',
+            'assumptions': <String>[],
           },
       ],
-      'totals': {'grams': 0, 'kcal': 0, 'protein_g': 0, 'carbs_g': 0, 'fat_g': 0},
-      'confidence': 'medium',
-      'assumptions': <String>[],
     });
     return jsonEncode(decoded);
   } catch (_) {

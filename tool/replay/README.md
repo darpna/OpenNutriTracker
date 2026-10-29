@@ -21,7 +21,8 @@ happen, and anything added to it must keep it so:
 - **Never print or write a file name or path.** A name can hold a date or a
   place. A photo is identified by `id`: the first ten characters of the SHA-1 of
   its bytes. Progress lines say `[3/20] a9993e3647 …` and nothing more.
-- The key (`GROQ_API_KEY`) is read from the environment, held in memory, and
+- The keys (`REPLAY_API_KEY`, or `GROQ_API_KEY` as before, and
+  `REPLAY_FALLBACK_API_KEY`) are read from the environment, held in memory, and
   never printed.
 - Captions in the output are the text of the sidecar files the owner wrote.
 
@@ -45,14 +46,21 @@ happen, and anything added to it must keep it so:
 ```sh
 REPLAY_DIR=/path/to/photos \
 REPLAY_OUT=replay.json \
-GROQ_API_KEY=… \
+REPLAY_API_KEY=… \
   flutter test tool/replay/replay_test.dart
 ```
 
 `REPLAY_DIR` is searched recursively for `.jpg`, `.jpeg` and `.png`; a file
 `<name>.txt` beside `<name>.jpg` is that photo's caption. Optional:
 `REPLAY_BASE_URL` (default `https://api.groq.com/openai/v1`), `REPLAY_MODEL`
-(default `qwen/qwen3.8-27b`), `REPLAY_MIN_GAP_SECONDS` (default `20`).
+(default `qwen/qwen3.8-27b`), `REPLAY_MIN_GAP_SECONDS` (default `20`),
+`REPLAY_RUNS` (default `1`: how many times every photo is read, to see whether
+the answers agree), and the fallback the app asks when the primary times out,
+answers 429 or answers 5xx: `REPLAY_FALLBACK_BASE_URL`, `REPLAY_FALLBACK_MODEL`
+and `REPLAY_FALLBACK_API_KEY` (off unless the first two are set). With a
+fallback set, the primary's 429 is not retried by the harness, so the replay
+shows the app handing it to the fallback. One food-number cache is shared by the
+whole run, as a phone keeps one.
 
 It needs network access to the API and to Open Food Facts, and the usual
 codegen first (`just build`, with a `.env` as in `AGENTS.md`). Without
@@ -70,8 +78,11 @@ A run of 20 photos takes about seven minutes.
 
 ```json
 {
-  "model": "qwen/qwen3.8-27b",
-  "base_url": "https://api.groq.com/openai/v1",
+  "model": "gemini-3.5-flash",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+  "runs": 1,
+  "fallback_model": "qwen/qwen3.8-27b",
+  "fallback_base_url": "https://api.groq.com/openai/v1",
   "photos": [
     {
       "id": "a9993e3647",
@@ -98,7 +109,33 @@ A run of 20 photos takes about seven minutes.
       "portion_g": 250.0,
       "confidence": "medium",
       "grounded": { "grams": 250.0, "kcal": 540.2, "protein_g": 28.1, "carbs_g": 61.0, "fat_g": 19.4 },
-      "ai_only": { "grams": 250.0, "kcal": 515.0, "protein_g": 27.0, "carbs_g": 58.0, "fat_g": 18.0 }
+      "ai_only": { "grams": 250.0, "kcal": 515.0, "protein_g": 27.0, "carbs_g": 58.0, "fat_g": 18.0 },
+      "run": 1,
+      "model_used": "gemini-3.5-flash",
+      "dishes": [
+        {
+          "name": "Katsu chicken wrap",
+          "portion_g": 250.0,
+          "servings": 1.0,
+          "confidence": "medium",
+          "assumptions": ["Added fat capped at 8% of the dish: 30 g to 20 g."],
+          "grounded": { "grams": 250.0, "kcal": 540.2, "protein_g": 28.1, "carbs_g": 61.0, "fat_g": 19.4 },
+          "ai_only": { "grams": 250.0, "kcal": 515.0, "protein_g": 27.0, "carbs_g": 58.0, "fat_g": 18.0 },
+          "rows": [
+            {
+              "name": "Chicken, breaded, fried",
+              "source": "db",
+              "db_name": "Chicken, broilers or fryers, breast, meat and skin, cooked, fried, batter",
+              "grams": 120.0,
+              "per100g": { "kcal": 260.0, "protein_g": 24.8, "carbs_g": 9.0, "fat_g": 13.2 },
+              "kcal": 312.0,
+              "protein_g": 29.8,
+              "carbs_g": 10.8,
+              "fat_g": 15.8
+            }
+          ]
+        }
+      ]
     }
   ]
 }
@@ -124,8 +161,19 @@ A run of 20 photos takes about seven minutes.
   read as a recipe.
 - `source` is `db` for an ingredient the table matched, `ai_estimate` for one
   that kept the model's numbers.
-- `dish`, `unmatched`, `portion_g`, `confidence`, `grounded` and `ai_only` are
-  additions to the minimal shape.
+- `dishes` is every dish the photo was read as, each with its own `grounded`
+  and `ai_only` totals, its assumptions (the model's, then a line for every
+  check in code that changed something) and its `rows`: every ingredient with
+  `source` `db` (the table), `cache` (the numbers settled the first time that
+  food came up) or `ai` (the model's, checked), and its `per100g`.
+- With several dishes, the older top-level fields describe the whole plate:
+  `dish` is the first dish's name, `portion_g`, `grounded` and `ai_only` are
+  sums over the dishes, and `confidence` is the lowest of them.
+- `run` is which reading of the photo this is (from 1); with `runs` above 1
+  each photo appears once per run. `model_used` is the model that answered:
+  the primary's, or the fallback's when the primary failed.
+- `dish`, `unmatched`, `portion_g`, `confidence`, `grounded`, `ai_only`, `run`,
+  `model_used` and `dishes` are additions to the minimal shape.
 
 ## In the private repo
 
@@ -134,8 +182,12 @@ A run of 20 photos takes about seven minutes.
 `.github/workflows`).
 
 1. Photos go in `photos/<day>/` (optional `<name>.txt` captions beside them).
-2. Add the repository secret `GROQ_API_KEY`.
+2. Add the repository secrets `GEMINI_API_KEY` and `GROQ_API_KEY`.
 3. Actions → **Replay photos** → Run workflow; `day` is a folder name or `all`.
+   The other inputs default to Gemini (`gemini-3.5-flash` on Google's
+   OpenAI-compatible endpoint) with Groq (`qwen/qwen3.8-27b`) as the fallback,
+   and one run; `key_secret` and `fallback_key_secret` name the secrets to use,
+   and an empty `fallback_base_url` turns the fallback off.
 4. Download the `replay` artifact (`replay.json`). Artifacts of a private
    repository are private.
 

@@ -87,6 +87,7 @@ import 'package:opennutritracker/core/utils/env.dart';
 import 'package:http/http.dart' as http;
 import 'package:opennutritracker/core/utils/ai_credential_storage.dart';
 import 'package:opennutritracker/features/add_meal/data/meal_items_api_factory.dart';
+import 'package:opennutritracker/features/add_meal/data/data_sources/food_number_cache_data_source.dart';
 import 'package:opennutritracker/features/add_meal/data/model_meal_photo_interpreter.dart';
 import 'package:opennutritracker/features/add_meal/data/model_meal_text_interpreter.dart';
 import 'package:opennutritracker/features/add_meal/util/generic_food_table.dart';
@@ -193,6 +194,9 @@ Future<void> initLocator() async {
             // The bundled USDA table; a failure to load it leaves the model's
             // own numbers in place.
             table: () => GenericFoodTable.loadBundled(),
+            // What each food's numbers were settled as, so a second photo of
+            // it gets the same ones.
+            cache: FoodNumberCacheDataSource(hiveDBProvider.foodNumberCacheBox),
           ),
     ),
   );

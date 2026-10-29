@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
@@ -113,6 +114,9 @@ class OpenAiMealItemsApi implements MealItemsApi, MealPhotoToolApi {
       // leaving. Responses stores by default, so this is not a no-op.
       'store': false,
       'max_output_tokens': spec.maxTokens,
+      // No `temperature` or `top_p`, unlike the other two clients: the models
+      // this client is offered (`AiModelCatalogue`) are reasoning models, and
+      // those refuse a request that sets either.
     });
 
     final http.Response response;
@@ -127,6 +131,10 @@ class OpenAiMealItemsApi implements MealItemsApi, MealPhotoToolApi {
             body: body,
           )
           .timeout(timeout);
+    } on TimeoutException {
+      // Still `transient`, as it always was here; marked so a fallback
+      // provider can be asked instead.
+      throw const MealInterpreterException('request timed out', timedOut: true);
     } catch (e) {
       // Not logging `e`, matching both other clients: a socket error can
       // carry part of the request, and on the photo path the request is the

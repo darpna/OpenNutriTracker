@@ -953,6 +953,24 @@ void main() {
           'http://192.168.1.5:11434/v1/',
           'http://192.168.1.5:11434/v1/chat/completions',
         ),
+        // Google's compatibility base, the way its own docs print it.
+        (
+          'https://generativelanguage.googleapis.com/v1beta/openai/',
+          'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+        ),
+        (
+          'https://generativelanguage.googleapis.com/v1beta/openai',
+          'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+        ),
+        // Its model list is the same base, and the full route is left alone.
+        (
+          'https://generativelanguage.googleapis.com/v1beta/openai/models',
+          'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+        ),
+        (
+          'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+          'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+        ),
         // Already a route: left exactly as typed.
         (
           'https://ollama.example.com/v1/chat/completions',

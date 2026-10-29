@@ -94,6 +94,115 @@ List<String> normalizedWords(String text) => [
     if (word.isNotEmpty && !_stopWords.contains(word)) singularize(word),
 ];
 
+/// Words that describe how a food was cut or how recently it was bought, which
+/// no table row is named by. Dropped from a name before it is matched, so
+/// "Fresh coriander" is matched as "coriander" and "Onion, chopped" as
+/// "onion".
+const _modifiers = {
+  'fresh',
+  'freshly',
+  'chopped',
+  'sliced',
+  'diced',
+  'minced',
+  'finely',
+  'roughly',
+  'thinly',
+};
+
+/// Words a name may carry that the table uses only for some forms of a food.
+/// Kept when one of the food's rows says it ("Rice, white, cooked" against the
+/// raw grain), dropped when none does ("Paneer, cooked" against a table that
+/// knows paneer only one way), so the word cannot cost the match.
+const _softForms = {'raw', 'cooked'};
+
+/// Genera that turn up in a model's ingredient names as the second half of
+/// "Coriander (Coriandrum sativum)" or "Turmeric, Curcuma longa". A Latin
+/// binomial whose genus is one of these is dropped before matching.
+const _genera = {
+  'abelmoschus',
+  'allium',
+  'anacardium',
+  'arachis',
+  'bos',
+  'brassica',
+  'capsicum',
+  'carum',
+  'cicer',
+  'cinnamomum',
+  'citrus',
+  'cocos',
+  'coriandrum',
+  'cucumis',
+  'cucurbita',
+  'cuminum',
+  'curcuma',
+  'daucus',
+  'elettaria',
+  'ferula',
+  'foeniculum',
+  'gallus',
+  'glycine',
+  'lactuca',
+  'lens',
+  'mangifera',
+  'mentha',
+  'murraya',
+  'musa',
+  'myristica',
+  'nigella',
+  'ocimum',
+  'oryza',
+  'ovis',
+  'phaseolus',
+  'piper',
+  'prunus',
+  'sesamum',
+  'solanum',
+  'spinacia',
+  'sus',
+  'syzygium',
+  'tamarindus',
+  'trigonella',
+  'triticum',
+  'vigna',
+  'zea',
+  'zingiber',
+};
+
+final _parenthetical = RegExp(r'\([^()]*\)|\[[^\[\]]*\]');
+final _binomial = RegExp(r'\b([A-Z][a-z]+)\s+([a-z]+)\b');
+
+/// [name] without what no table row is named by: anything in brackets, a
+/// Latin binomial ("Coriandrum sativum"), and words for how it was cut
+/// ([_modifiers]). Only for matching; the name shown is the model's.
+///
+/// A name that would be left empty is returned unchanged, so "Fresh" is still
+/// a word to fail on rather than an empty match.
+String cleanFoodName(String name) {
+  var text = name.replaceAll(_parenthetical, ' ');
+  text = text.replaceAllMapped(
+    _binomial,
+    (m) => _genera.contains(m[1]!.toLowerCase()) ? ' ' : m[0]!,
+  );
+  final kept = <String>[];
+  for (final part in text.split(',')) {
+    final words = [
+      for (final word in part.trim().split(RegExp(r'\s+')))
+        if (word.isNotEmpty && !_modifiers.contains(word.toLowerCase())) word,
+    ];
+    if (words.isNotEmpty) kept.add(words.join(' '));
+  }
+  final cleaned = kept.join(', ');
+  return cleaned.trim().isEmpty ? name.trim() : cleaned;
+}
+
+/// The key a food is remembered by in the food-number cache: its cleaned,
+/// normalised words in a fixed order, so "Rice, white" and "White rice" are
+/// one food.
+String foodNumberKey(String name) =>
+    (normalizedWords(cleanFoodName(name)).toSet().toList()..sort()).join(' ');
+
 /// Words that mark a rarer variant of a common food ("glutinous" rice, a
 /// "sprouted" lentil, a "nonfat" yogurt). A plain name means the common one.
 const _variants = {
@@ -211,12 +320,37 @@ class GenericFoodTable {
       );
 
   /// The best match for [name], or null when nothing clears [minRecall].
-  GenericFoodMatch? match(String name) {
-    final words = normalizedWords(name);
+  ///
+  /// The name is cleaned first ([cleanFoodName]). [accept] can refuse a row
+  /// the words would otherwise pick — the photo estimate refuses one whose
+  /// energy is far from what the model said — and the best row it accepts
+  /// wins instead.
+  GenericFoodMatch? match(
+    String name, {
+    bool Function(GenericFood food)? accept,
+  }) {
+    var words = normalizedWords(cleanFoodName(name));
     if (words.isEmpty) return null;
-    final unique = words.toSet().toList();
+    // "Cooked rice" is rice: a form word is never the head noun.
+    if (words.length > 1 && _softForms.contains(words.first)) {
+      words = [...words.skip(1), words.first];
+    }
     final candidates = _byHead[words.first];
     if (candidates == null) return null;
+    // "raw" or "cooked" that none of this food's rows says is a word the table
+    // does not use for it, not a reason to miss.
+    final soft = words.where(_softForms.contains).toSet();
+    if (soft.isNotEmpty) {
+      final unused = soft.where(
+        (word) => !candidates.any((i) => _entries[i].words.contains(word)),
+      );
+      final drop = unused.toSet();
+      if (drop.isNotEmpty) {
+        final kept = words.where((w) => !drop.contains(w)).toList();
+        if (kept.isNotEmpty) words = kept;
+      }
+    }
+    final unique = words.toSet().toList();
 
     _Entry? best;
     var bestScore = -1.0;
@@ -226,6 +360,7 @@ class GenericFoodTable {
       final matched = unique.where(entry.words.contains).toList();
       final recall = matched.length / unique.length;
       if (recall < minRecall) continue;
+      if (accept != null && !accept(entry.food)) continue;
       final extra = entry.words.difference(unique.toSet());
       // The name decides first (recall). The rest only orders the entries that
       // match it equally well: the food whose description starts with the

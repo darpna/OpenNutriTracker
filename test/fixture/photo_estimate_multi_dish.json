@@ -1,0 +1,58 @@
+{
+  "dishes": [
+    {
+      "name": "Idli",
+      "portion_g": 160,
+      "servings": 4,
+      "ingredients": [
+        {"name": "Rice, white, cooked", "grams": 110, "per100g": {"kcal": 130, "protein_g": 2.7, "carbs_g": 28.2, "fat_g": 0.3}, "visible": true},
+        {"name": "Urad dal (Vigna mungo), cooked", "grams": 48, "per100g": {"kcal": 105, "protein_g": 7.6, "carbs_g": 18.3, "fat_g": 0.6}, "visible": false},
+        {"name": "Salt, table", "grams": 1.5, "per100g": {"kcal": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0}, "visible": false}
+      ],
+      "confidence": "high",
+      "assumptions": ["Four medium idli"]
+    },
+    {
+      "name": "Sambar",
+      "portion_g": 250,
+      "servings": 1,
+      "ingredients": [
+        {"name": "Water", "grams": 140, "per100g": {"kcal": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0}, "visible": false},
+        {"name": "Pigeon peas (toor dal), cooked", "grams": 60, "per100g": {"kcal": 121, "protein_g": 6.8, "carbs_g": 23.3, "fat_g": 0.4}, "visible": true},
+        {"name": "Tomatoes, red, raw", "grams": 30, "per100g": {"kcal": 18, "protein_g": 0.9, "carbs_g": 3.9, "fat_g": 0.2}, "visible": true},
+        {"name": "Oil, coconut", "grams": 6, "per100g": {"kcal": 172, "protein_g": 0, "carbs_g": 0, "fat_g": 19.1}, "visible": false},
+        {"name": "Coriander (Coriandrum sativum), fresh", "grams": 6, "per100g": {"kcal": 23, "protein_g": 2.1, "carbs_g": 3.7, "fat_g": 0.5}, "visible": true},
+        {"name": "Spices, turmeric, ground", "grams": 4.5, "per100g": {"kcal": 312, "protein_g": 9.7, "carbs_g": 67.1, "fat_g": 3.3}, "visible": false}
+      ],
+      "confidence": "medium",
+      "assumptions": ["Thin restaurant sambar"]
+    },
+    {
+      "name": "Coconut chutney",
+      "portion_g": 40,
+      "servings": 1,
+      "ingredients": [
+        {"name": "Coconut, fresh, grated", "grams": 30, "per100g": {"kcal": 354, "protein_g": 3.3, "carbs_g": 15.2, "fat_g": 33.5}, "visible": true},
+        {"name": "Water", "grams": 10, "per100g": {"kcal": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0}, "visible": false}
+      ],
+      "confidence": "medium",
+      "assumptions": []
+    },
+    {
+      "name": "Chicken Pad Thai",
+      "portion_g": 400,
+      "servings": 1,
+      "ingredients": [
+        {"name": "Rice noodles, cooked", "grams": 220, "per100g": {"kcal": 108, "protein_g": 1.8, "carbs_g": 24, "fat_g": 0.2}, "visible": true},
+        {"name": "Chicken breast, cooked", "grams": 40, "per100g": {"kcal": 165, "protein_g": 31, "carbs_g": 0, "fat_g": 3.6}, "visible": true},
+        {"name": "Oil, vegetable", "grams": 40, "per100g": {"kcal": 884, "protein_g": 0, "carbs_g": 0, "fat_g": 100}, "visible": false},
+        {"name": "Sauce, soy", "grams": 15, "per100g": {"kcal": 60, "protein_g": 10.5, "carbs_g": 5.6, "fat_g": 0.1}, "visible": false},
+        {"name": "Sugar, white", "grams": 10, "per100g": {"kcal": 100, "protein_g": 0, "carbs_g": 99.8, "fat_g": 0}, "visible": false},
+        {"name": "Egg, whole, cooked", "grams": 30, "per100g": {"kcal": 154, "protein_g": 10.6, "carbs_g": 0.6, "fat_g": 11.7}, "visible": true},
+        {"name": "Peanuts, roasted", "grams": 15, "per100g": {"kcal": 585, "protein_g": 24.4, "carbs_g": 21.3, "fat_g": 49.7}, "visible": true}
+      ],
+      "confidence": "medium",
+      "assumptions": ["Takeaway portion"]
+    }
+  ]
+}
