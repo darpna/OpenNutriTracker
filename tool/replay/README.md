@@ -92,7 +92,11 @@ A run of 20 photos takes about seven minutes.
       ],
       "unmatched": ["katsu sauce"],
       "total_kcal": 300.3,
-      "error": null
+      "error": null,
+      "portion_g": 250.0,
+      "confidence": "medium",
+      "grounded": { "grams": 250.0, "kcal": 540.2, "protein_g": 28.1, "carbs_g": 61.0, "fat_g": 19.4 },
+      "ai_only": { "grams": 250.0, "kcal": 515.0, "protein_g": 27.0, "carbs_g": 58.0, "fat_g": 18.0 }
     }
   ]
 }
@@ -106,7 +110,16 @@ A run of 20 photos takes about seven minutes.
 - `unmatched` lists foods the model named that nothing could stand in for.
 - `error` is a failure kind (`transient`, `auth`, `unreadable`, …), never a
   provider message.
-- `dish` and `unmatched` are additions to the minimal shape.
+- `grounded` is the dish total the app shows: the sum of the ingredients with
+  the bundled USDA table's numbers where it matched. `ai_only` is the same
+  ingredients (same grams) with only the model's numbers. Comparing the two over
+  a set of photos shows whether the table helps. `portion_g` and `confidence`
+  are the model's. All four are null when nothing was read or the photo was not
+  read as a recipe.
+- `source` is `db` for an ingredient the table matched, `ai_estimate` for one
+  that kept the model's numbers.
+- `dish`, `unmatched`, `portion_g`, `confidence`, `grounded` and `ai_only` are
+  additions to the minimal shape.
 
 ## In the private repo
 

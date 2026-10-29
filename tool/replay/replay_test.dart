@@ -25,6 +25,7 @@ import 'package:opennutritracker/features/add_meal/domain/usecase/read_meal_text
 import 'package:opennutritracker/features/add_meal/domain/usecase/resolve_parsed_meals_usecase.dart';
 import 'package:opennutritracker/features/add_meal/domain/usecase/search_products_usecase.dart';
 import 'package:opennutritracker/features/add_meal/presentation/bloc/bulk_add_bloc.dart';
+import 'package:opennutritracker/features/add_meal/util/generic_food_table.dart';
 import 'package:opennutritracker/features/add_meal/util/meal_photo_encoder.dart';
 
 import 'dart_photo_preparer.dart';
@@ -129,6 +130,13 @@ class _MemoryStorage extends Fake implements FlutterSecureStorage {
   }) async => _values.remove(key);
 }
 
+/// The bundled USDA table, read from the asset file (a plain `flutter test`
+/// has no asset bundle for the app's own assets).
+Future<GenericFoodTable?> _bundledTable() async =>
+    GenericFoodTable.fromGzipBytes(
+      File(GenericFoodTable.assetPath).readAsBytesSync(),
+    );
+
 void main() {
   final dirPath = _setting('REPLAY_DIR', '');
   final outPath = _setting('REPLAY_OUT', 'replay.json');
@@ -189,7 +197,7 @@ void main() {
       final api = mealItemsApiFor(transport, selection!);
       final photoReader = ReadMealPhotoUseCase(
         credentials,
-        (_) => ModelMealPhotoInterpreter(api),
+        (_) => ModelMealPhotoInterpreter(api, table: _bundledTable),
       );
       // The text reader is part of the bloc's constructor and never used here.
       final textReader = ReadMealTextUseCase(
