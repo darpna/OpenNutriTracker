@@ -15,6 +15,34 @@ on:
         description: 'A folder under photos/ (e.g. 2026-10-28), or "all"'
         type: string
         default: all
+      runs:
+        description: 'How many times to read every photo (to see whether answers agree)'
+        type: string
+        default: '1'
+      base_url:
+        description: 'Primary provider, OpenAI-compatible base URL'
+        type: string
+        default: https://generativelanguage.googleapis.com/v1beta/openai
+      model:
+        description: 'Primary model'
+        type: string
+        default: gemini-3.5-flash
+      key_secret:
+        description: 'Name of the repository secret holding the primary key'
+        type: string
+        default: GEMINI_API_KEY
+      fallback_base_url:
+        description: 'Fallback provider base URL (empty for no fallback)'
+        type: string
+        default: https://api.groq.com/openai/v1
+      fallback_model:
+        description: 'Fallback model'
+        type: string
+        default: qwen/qwen3.8-27b
+      fallback_key_secret:
+        description: 'Name of the repository secret holding the fallback key'
+        type: string
+        default: GROQ_API_KEY
 
 permissions:
   contents: read
@@ -22,7 +50,7 @@ permissions:
 jobs:
   replay:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 300
     steps:
       # The private repo: photos/<day>/*.jpg|jpeg|png|heic, optional <name>.txt.
       - name: Checkout test data
@@ -96,11 +124,15 @@ jobs:
       - name: Replay
         working-directory: app
         env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          REPLAY_API_KEY: ${{ secrets[inputs.key_secret] }}
           REPLAY_DIR: ${{ runner.temp }}/replay_in
           REPLAY_OUT: ${{ github.workspace }}/replay.json
-          REPLAY_BASE_URL: https://api.groq.com/openai/v1
-          REPLAY_MODEL: qwen/qwen3.8-27b
+          REPLAY_BASE_URL: ${{ inputs.base_url }}
+          REPLAY_MODEL: ${{ inputs.model }}
+          REPLAY_RUNS: ${{ inputs.runs }}
+          REPLAY_FALLBACK_BASE_URL: ${{ inputs.fallback_base_url }}
+          REPLAY_FALLBACK_MODEL: ${{ inputs.fallback_model }}
+          REPLAY_FALLBACK_API_KEY: ${{ secrets[inputs.fallback_key_secret] }}
         run: flutter test tool/replay/replay_test.dart --reporter expanded
 
       - name: Upload replay.json

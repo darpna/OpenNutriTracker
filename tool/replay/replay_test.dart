@@ -3,12 +3,13 @@
 // a `flutter test` file only because that is what can load the app's code
 // headless. It lives outside test/, so the normal run never reaches it.
 //
-//   REPLAY_DIR=/path/to/photos REPLAY_OUT=replay.json GROQ_API_KEY=… \
+//   REPLAY_DIR=/path/to/photos REPLAY_OUT=replay.json REPLAY_API_KEY=… \
 //     flutter test tool/replay/replay_test.dart
 //
 // See tool/replay/README.md. PRIVACY: photos are private. Nothing printed or
 // written here may contain a file name or path; a photo is its `id`.
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -20,6 +21,8 @@ import 'package:opennutritracker/features/add_meal/data/meal_items_api_factory.d
 import 'package:opennutritracker/features/add_meal/data/model_meal_photo_interpreter.dart';
 import 'package:opennutritracker/features/add_meal/data/model_meal_text_interpreter.dart';
 import 'package:opennutritracker/features/add_meal/data/repository/products_repository.dart';
+import 'package:opennutritracker/features/add_meal/domain/meal_items_api.dart';
+import 'package:opennutritracker/features/add_meal/domain/food_number_cache.dart';
 import 'package:opennutritracker/features/add_meal/domain/usecase/read_meal_photo_usecase.dart';
 import 'package:opennutritracker/features/add_meal/domain/usecase/read_meal_text_usecase.dart';
 import 'package:opennutritracker/features/add_meal/domain/usecase/resolve_parsed_meals_usecase.dart';
@@ -140,14 +143,23 @@ Future<GenericFoodTable?> _bundledTable() async =>
 void main() {
   final dirPath = _setting('REPLAY_DIR', '');
   final outPath = _setting('REPLAY_OUT', 'replay.json');
-  final apiKey = _setting('GROQ_API_KEY', '');
+  // REPLAY_API_KEY for whatever REPLAY_BASE_URL names; GROQ_API_KEY still
+  // works, as it did when Groq was the only provider the harness ran.
+  final apiKey = _setting('REPLAY_API_KEY', _setting('GROQ_API_KEY', ''));
   final baseUrl = _setting('REPLAY_BASE_URL', _defaultBaseUrl);
   final model = _setting('REPLAY_MODEL', _defaultModel);
+  final runs = math.max(1, int.tryParse(_setting('REPLAY_RUNS', '1')) ?? 1);
+  // The fallback, asked when the primary times out, rate-limits or fails on
+  // its side, exactly as the app asks it. Off unless both are set.
+  final fallbackBaseUrl = _setting('REPLAY_FALLBACK_BASE_URL', '');
+  final fallbackModel = _setting('REPLAY_FALLBACK_MODEL', '');
+  final fallbackKey = _setting('REPLAY_FALLBACK_API_KEY', '');
+  final hasFallback = fallbackBaseUrl.isNotEmpty && fallbackModel.isNotEmpty;
 
   final skip = dirPath.isEmpty
       ? 'REPLAY_DIR is not set'
       : apiKey.isEmpty
-      ? 'GROQ_API_KEY is not set'
+      ? 'REPLAY_API_KEY is not set'
       : !Directory(dirPath).existsSync()
       ? 'REPLAY_DIR does not exist'
       : null;
@@ -161,7 +173,10 @@ void main() {
     () async {
       final photos = listPhotos(Directory(dirPath));
       // ignore: avoid_print
-      print('replaying ${photos.length} photo(s) with $model');
+      print(
+        'replaying ${photos.length} photo(s) x $runs run(s) with $model'
+        '${hasFallback ? ', falling back to $fallbackModel' : ''}',
+      );
 
       // The settings the app reads from the device, written the way the
       // settings dialog writes them.
@@ -179,30 +194,65 @@ void main() {
       await credentials.writeApiKey(apiKey, provider: AiProvider.ownServer);
       await credentials.setTermsAccepted(true);
       await credentials.setEnabled(true);
+      if (hasFallback) {
+        expect(
+          await credentials.writeFallbackConfiguration(
+            endpoint: fallbackBaseUrl,
+            model: fallbackModel,
+            apiKey: fallbackKey,
+          ),
+          isTrue,
+          reason: 'the fallback base URL and model must be usable',
+        );
+      }
       final selection = await credentials.readSelection();
       expect(selection, isNotNull, reason: 'the AI settings must be usable');
 
-      final transport = ReplayHttpClient(
-        http.Client(),
-        RequestPacer(
-          minGap: Duration(
-            seconds:
-                int.tryParse(_setting('REPLAY_MIN_GAP_SECONDS', '')) ??
-                _defaultGapSeconds,
-          ),
-        ),
-        // ignore: avoid_print
-        log: (line) => print('  $line'),
+      final gap = Duration(
+        seconds:
+            int.tryParse(_setting('REPLAY_MIN_GAP_SECONDS', '')) ??
+            _defaultGapSeconds,
       );
-      final api = mealItemsApiFor(transport, selection!);
+      // ignore: avoid_print
+      void log(String line) => print('  $line');
+      // Each provider has its own rate limit, so each gets its own pacer. With
+      // a fallback the primary's 429 is not retried here: it is one of the
+      // failures the app hands to the fallback, and the replay should see the
+      // app do that rather than wait it out.
+      final primaryTransport = ReplayHttpClient(
+        http.Client(),
+        RequestPacer(minGap: gap),
+        maxRetries: hasFallback ? 0 : 3,
+        log: log,
+      );
+      final fallbackTransport = ReplayHttpClient(
+        http.Client(),
+        RequestPacer(minGap: gap),
+        log: log,
+      );
+      // One cache for the whole replay, as a phone keeps one: the second time
+      // a food comes up it gets the numbers the first settled on.
+      final cache = MemoryFoodNumberCache();
+      MealItemsApi apiFor(AiSelection selection) => mealItemsApiFor(
+        selection.endpoint == null ||
+                AiCredentialStorage.resolveEndpoint(selection.endpoint!) ==
+                    AiCredentialStorage.resolveEndpoint(baseUrl)
+            ? primaryTransport
+            : fallbackTransport,
+        selection,
+      );
       final photoReader = ReadMealPhotoUseCase(
         credentials,
-        (_) => ModelMealPhotoInterpreter(api, table: _bundledTable),
+        (selection) => ModelMealPhotoInterpreter(
+          apiFor(selection),
+          table: _bundledTable,
+          cache: cache,
+        ),
       );
       // The text reader is part of the bloc's constructor and never used here.
       final textReader = ReadMealTextUseCase(
         credentials,
-        (_) => ModelMealTextInterpreter(api),
+        (selection) => ModelMealTextInterpreter(apiFor(selection)),
       );
       final resolver = ResolveParsedMealsUseCase(
         _OffOnlySearch(ProductsRepository(OFFDataSource(), _NoBackend())),
@@ -210,79 +260,103 @@ void main() {
       const preparer = DartPhotoPreparer();
 
       final results = <ReplayResult>[];
-      for (var i = 0; i < photos.length; i++) {
-        final file = photos[i];
-        final bytes = readBytes(file);
-        final id = photoId(bytes);
-        final caption = captionFor(file);
-        final label = '[${i + 1}/${photos.length}] $id';
+      for (var run = 1; run <= runs; run++) {
+        for (var i = 0; i < photos.length; i++) {
+          final file = photos[i];
+          final bytes = readBytes(file);
+          final id = photoId(bytes);
+          final caption = captionFor(file);
+          final label =
+              '${runs > 1 ? 'run $run ' : ''}[${i + 1}/${photos.length}] $id';
 
-        final photo = await preparer.prepare(
-          file.path,
-          MealPhotoFormat.forProvider(AiProvider.ownServer),
-        );
-        if (photo == null) {
-          // ignore: avoid_print
-          print('$label could not be encoded');
-          results.add(
-            ReplayResult(id: id, caption: caption, error: 'unreadable'),
+          final photo = await preparer.prepare(
+            file.path,
+            MealPhotoFormat.forProvider(AiProvider.ownServer),
           );
-          continue;
-        }
+          if (photo == null) {
+            // ignore: avoid_print
+            print('$label could not be encoded');
+            results.add(
+              ReplayResult(
+                id: id,
+                caption: caption,
+                run: run,
+                error: 'unreadable',
+              ),
+            );
+            continue;
+          }
 
-        // A bloc per photo, as the screen gets one per visit.
-        final bloc = BulkAddBloc(resolver, textReader, photoReader);
-        bloc.add(
-          ReadMealPhotoEvent(
-            photo: photo,
-            usesImperialUnits: false,
-            localeCode: 'en',
-            caption: caption,
-          ),
-        );
-        final state = await bloc.stream.firstWhere(
-          (s) => s is! BulkAddLoadingState,
-        );
-        await bloc.close();
+          // A bloc per photo, as the screen gets one per visit.
+          final bloc = BulkAddBloc(resolver, textReader, photoReader);
+          bloc.add(
+            ReadMealPhotoEvent(
+              photo: photo,
+              usesImperialUnits: false,
+              localeCode: 'en',
+              caption: caption,
+            ),
+          );
+          final state = await bloc.stream.firstWhere(
+            (s) => s is! BulkAddLoadingState,
+          );
+          await bloc.close();
 
-        final result = switch (state) {
-          BulkAddLoadedState() => resultFromLoaded(
-            id: id,
-            caption: caption,
-            state: state,
-          ),
-          BulkAddPhotoErrorState(
-            :final error,
-            :final httpStatus,
-            :final providerMessage,
-          ) =>
-            ReplayResult(
+          final result = switch (state) {
+            BulkAddLoadedState() => resultFromLoaded(
               id: id,
               caption: caption,
-              error: error.name,
-              httpStatus: httpStatus,
-              providerError: providerMessage,
+              state: state,
+              run: run,
             ),
-          _ => ReplayResult(id: id, caption: caption, error: 'search_failed'),
-        };
-        // ignore: avoid_print
-        print(
-          '$label ${result.error ?? '${result.items.length} item(s), '
-                  '${result.totalKcal.round()} kcal'}',
-        );
-        results.add(result);
+            BulkAddPhotoErrorState(
+              :final error,
+              :final httpStatus,
+              :final providerMessage,
+            ) =>
+              ReplayResult(
+                id: id,
+                caption: caption,
+                run: run,
+                error: error.name,
+                httpStatus: httpStatus,
+                providerError: providerMessage,
+              ),
+            _ => ReplayResult(
+              id: id,
+              caption: caption,
+              run: run,
+              error: 'search_failed',
+            ),
+          };
+          // ignore: avoid_print
+          print(
+            '$label ${result.error ?? '${result.dishes.length} dish(es), '
+                    '${result.items.length} item(s), '
+                    '${result.totalKcal.round()} kcal'
+                    '${result.modelUsed == model ? '' : ' (${result.modelUsed})'}'}',
+          );
+          results.add(result);
+        }
       }
 
       File(outPath).writeAsStringSync(
-        encodeReplay(model: model, baseUrl: baseUrl, results: results),
+        encodeReplay(
+          model: model,
+          baseUrl: baseUrl,
+          results: results,
+          runs: runs,
+          fallbackModel: hasFallback ? fallbackModel : null,
+          fallbackBaseUrl: hasFallback ? fallbackBaseUrl : null,
+        ),
       );
       // ignore: avoid_print
       print('wrote ${results.length} result(s)');
       // The run is a measurement, not a check: a photo that failed is in the
       // output with its error, and does not fail the job.
-      expect(results, hasLength(photos.length));
+      expect(results, hasLength(photos.length * runs));
     },
     skip: skip,
-    timeout: const Timeout(Duration(hours: 3)),
+    timeout: const Timeout(Duration(hours: 5)),
   );
 }
