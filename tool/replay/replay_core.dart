@@ -107,9 +107,15 @@ class ReplayResult {
   /// could stand in for, so the app would not have logged them.
   final List<String> unmatched;
 
-  /// Set when nothing could be read: a failure kind, never a message from the
-  /// provider.
+  /// Set when nothing could be read: a failure kind (`auth`, `providerError`,
+  /// `transient`, `unreadable`, ...).
   final String? error;
+
+  /// When the failure was the provider's answer: its HTTP status and its error
+  /// text (trimmed, key-shaped strings masked), so a bad key, a rate limit and
+  /// a bad photo can be told apart in the output.
+  final int? httpStatus;
+  final String? providerError;
 
   /// The recipe estimate's portion in grams, and the model's own confidence.
   final double? portionG;
@@ -128,6 +134,8 @@ class ReplayResult {
     this.items = const [],
     this.unmatched = const [],
     this.error,
+    this.httpStatus,
+    this.providerError,
     this.portionG,
     this.confidence,
     this.grounded,
@@ -145,6 +153,8 @@ class ReplayResult {
     'unmatched': unmatched,
     'total_kcal': _round(totalKcal),
     'error': error,
+    'http_status': httpStatus,
+    'provider_error': providerError,
     'portion_g': _round(portionG),
     'confidence': confidence,
     'grounded': _totals(grounded),

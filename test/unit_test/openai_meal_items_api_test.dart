@@ -434,10 +434,39 @@ void main() {
       );
     });
 
-    test('the provider message never reaches the exception', () async {
+    test('the status and the provider message are kept, with a key masked', () async {
+      final client = MockClient(
+        (_) async => http.Response(
+          jsonEncode({
+            'error': {
+              'message': 'Incorrect API key provided: sk-proj-****abcd.',
+              'code': 'invalid_api_key',
+            },
+          }),
+          401,
+        ),
+      );
+      final api = OpenAiMealItemsApi(client, () => 'k', model: 'm');
+
+      try {
+        await api.requestItems(
+          content: const MealTextContent('an egg'),
+          system: 'rules',
+        );
+        fail('expected a failure');
+      } on MealInterpreterException catch (e) {
+        expect(e.statusCode, 401);
+        expect(e.providerMessage, contains('Incorrect API key provided'));
+        expect(e.providerMessage, isNot(contains('sk-proj')));
+        expect(e.providerMessage, isNot(contains('abcd')));
+      }
+    });
+
+    test('the provider message never reaches the exception text', () async {
       // OpenAI's 401 body echoes the key in a partially masked form that
       // still carries its real last four characters, so the message is not a
-      // safe thing to keep hold of. Only the code is read.
+      // safe thing to put in a log line. It is kept on `providerMessage`,
+      // masked, for the screen; `toString` leaves it out.
       final client = MockClient(
         (_) async => http.Response(
           jsonEncode({

@@ -550,7 +550,10 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
           BulkAddPhotoError.insecureDestination =>
             S.of(context).bulkAddModelInsecureServerLabel,
           BulkAddPhotoError.billing => S.of(context).bulkAddPhotoNoCreditLabel,
+          BulkAddPhotoError.providerError =>
+            S.of(context).bulkAddPhotoProviderErrorLabel,
         },
+        detail: _photoErrorDetail(context, state),
         // #992. Three of these sentences send the user to Settings by name and
         // the fourth is answered there too, but only the *text* path ever
         // carried a way in — the photo path said "check it in Settings" and
@@ -578,7 +581,8 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
           BulkAddPhotoError.camera ||
           BulkAddPhotoError.gallery ||
           BulkAddPhotoError.unreadable ||
-          BulkAddPhotoError.billing => null,
+          BulkAddPhotoError.billing ||
+          BulkAddPhotoError.providerError => null,
         },
       );
     }
@@ -849,15 +853,37 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
     _openSettings(arguments: const SettingsScreenArguments(openAiAssist: true)),
   );
 
+  /// What the provider said, under the sentence: its status and error text, or
+  /// null when it gave neither (a dropped connection, a photo that never
+  /// encoded). The words are the provider's own and not translated.
+  String? _photoErrorDetail(
+    BuildContext context,
+    BulkAddPhotoErrorState state,
+  ) {
+    final status = state.httpStatus;
+    final message = state.providerMessage;
+    if (status != null && message != null) {
+      return S.of(context).bulkAddPhotoErrorStatusDetail('$status', message);
+    }
+    if (status != null) {
+      return S.of(context).bulkAddPhotoErrorStatusOnly('$status');
+    }
+    return message;
+  }
+
   /// A message that fills the body, optionally with something to do about it.
   ///
   /// [action] is optional because most callers have nothing to offer: a
   /// failed food search and an empty parse are not fixed anywhere in
   /// particular, so they stay a sentence and nothing else.
+  ///
+  /// [detail] is a smaller line under the message, for words that are not ours
+  /// to translate (a provider's status and error text).
   Widget _centeredMessage(
     BuildContext context,
     String message, {
     VoidCallback? action,
+    String? detail,
   }) => Padding(
     padding: const EdgeInsets.all(24),
     // Scrollable rather than clipped, for the reason #777 settled: this
@@ -873,6 +899,15 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(message, textAlign: TextAlign.center),
+            if (detail != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: SelectableText(
+                  detail,
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
             if (action != null)
               Semantics(
                 identifier: 'bulk-add-message-action',

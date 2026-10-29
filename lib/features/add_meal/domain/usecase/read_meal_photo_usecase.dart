@@ -57,15 +57,30 @@ enum MealPhotoFailure {
   /// needs changing, so this must not be reported as [unsupported].
   insecureDestination,
 
-  /// Network, rate limit, provider error. Worth another attempt.
+  /// No answer reached us: no network, a dropped connection, a timeout.
+  /// Worth another attempt, and "check your connection" is true of it.
   transient,
+
+  /// The provider answered, and the answer was an error that none of the
+  /// kinds above names: a rate limit, a 5xx, or a 400 whose cause only its
+  /// message tells. A 400 is as likely a wrong key or model as a bad image, so
+  /// it is not called "unreadable"; the status and the provider's own text
+  /// ride along on [MealPhotoFailed] so the cause can be read.
+  providerError,
 }
 
 /// The call failed.
 final class MealPhotoFailed extends MealPhotoReadResult {
   final MealPhotoFailure failure;
 
-  const MealPhotoFailed(this.failure);
+  /// The provider's HTTP status, when it answered with one.
+  final int? statusCode;
+
+  /// The provider's error text, trimmed and with key-shaped strings masked
+  /// (see `providerErrorMessage`).
+  final String? providerMessage;
+
+  const MealPhotoFailed(this.failure, {this.statusCode, this.providerMessage});
 }
 
 /// Reads a meal photo, when the user has asked for that.
@@ -110,9 +125,17 @@ class ReadMealPhotoUseCase {
       if (e.failure == MealInterpreterFailure.unsupported) {
         await _retractPhotoPass(selection);
       }
-      return MealPhotoFailed(switch (e.failure) {
+      // The provider answered with an error (a status, or an error message in
+      // a 200). Of the kinds it can arrive as, only these two say nothing
+      // about the cause, so they become `providerError` instead of "bad
+      // image" or "check your connection".
+      final fromProvider = e.statusCode != null || e.providerMessage != null;
+      final failure = switch (e.failure) {
         MealInterpreterFailure.auth => MealPhotoFailure.auth,
-        MealInterpreterFailure.rejected => MealPhotoFailure.rejectedImage,
+        MealInterpreterFailure.rejected =>
+          fromProvider
+              ? MealPhotoFailure.providerError
+              : MealPhotoFailure.rejectedImage,
         MealInterpreterFailure.unsupported => MealPhotoFailure.unsupported,
         MealInterpreterFailure.billing => MealPhotoFailure.billing,
         MealInterpreterFailure.insecureDestination =>
@@ -122,9 +145,17 @@ class ReadMealPhotoUseCase {
         // timeout as its own kind of failure, and "try again" is honest
         // advice for one — a cold Ollama can spend the whole budget loading
         // the model. #774.
-        MealInterpreterFailure.timeout ||
-        MealInterpreterFailure.transient => MealPhotoFailure.transient,
-      });
+        MealInterpreterFailure.timeout => MealPhotoFailure.transient,
+        MealInterpreterFailure.transient =>
+          fromProvider
+              ? MealPhotoFailure.providerError
+              : MealPhotoFailure.transient,
+      };
+      return MealPhotoFailed(
+        failure,
+        statusCode: e.statusCode,
+        providerMessage: e.providerMessage,
+      );
     } catch (e, stackTrace) {
       // An interpreter that throws something unexpected is a bug. Report it
       // as a transient failure rather than as a rejected key — telling the

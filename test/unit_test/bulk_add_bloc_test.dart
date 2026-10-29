@@ -1240,6 +1240,46 @@ void main() {
       );
     });
 
+    test('a provider error carries its status and message to the state', () async {
+      final state = await readPhoto(
+        {},
+        const MealPhotoFailed(
+          MealPhotoFailure.providerError,
+          statusCode: 400,
+          providerMessage: 'API key not valid.',
+        ),
+      );
+
+      final error = state as BulkAddPhotoErrorState;
+      expect(error.error, BulkAddPhotoError.providerError);
+      expect(error.httpStatus, 400);
+      expect(error.providerMessage, 'API key not valid.');
+    });
+
+    test('a dropped connection carries no status or message', () async {
+      final state = await readPhoto(
+        {},
+        const MealPhotoFailed(MealPhotoFailure.transient),
+      );
+
+      final error = state as BulkAddPhotoErrorState;
+      expect(error.error, BulkAddPhotoError.transient);
+      expect(error.httpStatus, isNull);
+      expect(error.providerMessage, isNull);
+    });
+
+    test('a refused image is still unreadable', () async {
+      final state = await readPhoto(
+        {},
+        const MealPhotoFailed(MealPhotoFailure.rejectedImage),
+      );
+
+      expect(
+        (state as BulkAddPhotoErrorState).error,
+        BulkAddPhotoError.unreadable,
+      );
+    });
+
     test('a refused plaintext photo points at the address, not the model', () async {
       final state = await readPhoto(
         {},
