@@ -6,6 +6,8 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'package:opennutritracker/features/add_meal/domain/usecase/probe_ai_endpoint_usecase.dart';
 import 'package:opennutritracker/features/add_meal/domain/usecase/run_ai_endpoint_probe_usecase.dart';
 import 'package:opennutritracker/core/utils/ai_credential_storage.dart';
@@ -24,6 +26,8 @@ import 'package:opennutritracker/core/domain/usecase/compute_recipe_nutrition_us
 import 'package:opennutritracker/core/domain/usecase/save_recipe_usecase.dart';
 import 'package:opennutritracker/features/add_meal/domain/ai_per100_estimate.dart';
 import 'package:opennutritracker/features/add_meal/domain/usecase/save_photo_dish_usecase.dart';
+import 'package:opennutritracker/features/add_meal/util/meal_photo_encoder.dart';
+import 'package:opennutritracker/features/add_meal/util/meal_photo_preparer.dart';
 import 'package:opennutritracker/core/utils/energy_unit_provider.dart';
 import 'package:opennutritracker/core/utils/navigation_options.dart';
 import 'package:opennutritracker/features/add_meal/domain/entity/meal_entity.dart';
@@ -1516,65 +1520,280 @@ void main() {
     });
   });
 
-  testWidgets('the photo sheet has a caption field for camera and gallery', (
-    tester,
-  ) async {
-    // One field above both choices, so a caption typed before choosing
-    // applies to whichever source is picked.
-    final sources = <int>[];
-    const channel = MethodChannel('plugins.flutter.io/image_picker');
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(channel, (call) async {
-          if (call.method == 'pickImage') {
-            sources.add((call.arguments as Map)['source'] as int);
-          }
-          return null;
-        });
-    addTearDown(
-      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, null),
-    );
+  group('photo first, caption while it prepares', () {
+    late Directory cache;
+    late _CountingPhotoReader reader;
+    late _GatedPreparer preparer;
+    late String pickedPath;
 
-    await _register(const {});
-    getIt.unregister<AiCredentialStorage>();
-    getIt.registerLazySingleton<AiCredentialStorage>(
-      () => AiCredentialStorage(
-        _MapStorage({
-          'AiApiKeyTag.openrouter': 'sk-or-test',
-          'AiAssistEnabledTag': 'true',
-          'AiProviderTag': 'openrouter',
-        }),
-      ),
-    );
+    /// Pushes the screen with a key stored (so the camera is offered), the
+    /// picker stubbed to return a file in a temporary "cache", and the encode
+    /// held by [preparer]. Real file work needs the real event loop, so the
+    /// waits below go through `runAsync`.
+    Future<void> openScreen(
+      WidgetTester tester, {
+      bool gateEncode = false,
+    }) async {
+      cache = Directory.systemTemp.createTempSync('ont_photo_cache_');
+      addTearDown(() => cache.deleteSync(recursive: true));
+      pickedPath = '${cache.path}/pick.jpg';
+      File(pickedPath).writeAsBytesSync(_tinyPng);
 
+      const channel = MethodChannel('plugins.flutter.io/image_picker');
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async => pickedPath);
+      addTearDown(
+        () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null),
+      );
+
+      reader = _CountingPhotoReader(
+        const MealPhotoRead(MealTextParseResult(items: [], errors: [])),
+      );
+      preparer = _GatedPreparer(cache.path, gated: gateEncode);
+      await _register(const {});
+      getIt.unregister<AiCredentialStorage>();
+      getIt.registerLazySingleton<AiCredentialStorage>(
+        () => AiCredentialStorage(
+          _MapStorage({
+            'AiApiKeyTag.openrouter': 'sk-or-test',
+            'AiAssistEnabledTag': 'true',
+            'AiProviderTag': 'openrouter',
+          }),
+        ),
+      );
+      getIt.registerSingleton<MealPhotoPreparer>(preparer);
+      getIt.unregister<BulkAddBloc>();
+      getIt.registerSingleton<BulkAddBloc>(
+        BulkAddBloc(
+          ResolveParsedMealsUseCase(_FakeSearch(const {})),
+          ReadMealTextUseCase(
+            AiCredentialStorage(_EmptyStorage()),
+            (_) => throw StateError('must not be built without a key'),
+          ),
+          reader,
+        ),
+      );
+
+      await tester.pumpWidget(_app());
+      await tester.pumpAndSettle();
+      tester.state<NavigatorState>(find.byType(Navigator)).pushNamed('/bulk');
+      await tester.pumpAndSettle();
+    }
+
+    /// Lets real I/O (the thumbnail read, the cache delete) finish.
+    Future<void> settleIo(WidgetTester tester) async {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 300)),
+      );
+      // Bounded pumps: a progress indicator on screen never "settles".
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(milliseconds: 200));
+      }
+    }
+
+    Future<void> pickFromCamera(WidgetTester tester) async {
+      await tester.tap(find.byIcon(Icons.photo_camera_rounded).first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(l10nEn.mealImageTakePhoto));
+      await tester.pump();
+      await settleIo(tester);
+    }
+
+    testWidgets('the caption sheet follows the pick, and nothing is sent yet', (
+      tester,
+    ) async {
+      await openScreen(tester);
+
+      await pickFromCamera(tester);
+
+      // The first sheet no longer asks for a caption: nothing to type about a
+      // photo that has not been chosen.
+      expect(find.text(l10nEn.bulkAddPhotoAnalyseLabel), findsOneWidget);
+      expect(find.text(l10nEn.bulkAddPhotoSkipCaptionLabel), findsOneWidget);
+      expect(find.text(l10nEn.bulkAddPhotoCaptionHint), findsOneWidget);
+      expect(find.text(l10nEn.bulkAddPhotoCaptionDisclosure), findsOneWidget);
+      expect(find.byType(Image), findsOneWidget, reason: 'the thumbnail');
+      // Keyboard up: the field has the focus.
+      final field = tester.widget<TextField>(
+        find.descendant(
+          of: find.byType(BottomSheet),
+          matching: find.byType(TextField),
+        ),
+      );
+      expect(field.autofocus, isTrue);
+      expect(preparer.started, 1, reason: 'the encode starts on pick');
+      expect(reader.calls, 0, reason: 'never a model call on pick');
+    });
+
+    testWidgets('Analyse sends one request, with the caption', (tester) async {
+      await openScreen(tester);
+      await pickFromCamera(tester);
+
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(BottomSheet),
+          matching: find.byType(TextField),
+        ),
+        '  katsu chicken wrap, 250 g ',
+      );
+      expect(reader.calls, 0, reason: 'typing sends nothing');
+      await tester.tap(find.text(l10nEn.bulkAddPhotoAnalyseLabel));
+      await settleIo(tester);
+
+      expect(reader.calls, 1);
+      expect(reader.captions, ['katsu chicken wrap, 250 g']);
+      expect(preparer.started, 1, reason: 'one encode per photo');
+    });
+
+    testWidgets('Analyse with an empty field sends the photo alone', (
+      tester,
+    ) async {
+      await openScreen(tester);
+      await pickFromCamera(tester);
+
+      await tester.tap(find.text(l10nEn.bulkAddPhotoAnalyseLabel));
+      await settleIo(tester);
+
+      expect(reader.calls, 1);
+      expect(reader.captions, [null]);
+    });
+
+    testWidgets('Skip caption sends one request without it', (tester) async {
+      await openScreen(tester);
+      await pickFromCamera(tester);
+
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(BottomSheet),
+          matching: find.byType(TextField),
+        ),
+        'typed but skipped',
+      );
+      await tester.tap(find.text(l10nEn.bulkAddPhotoSkipCaptionLabel));
+      await settleIo(tester);
+
+      expect(reader.calls, 1);
+      expect(reader.captions, [null]);
+    });
+
+    testWidgets('works the same from the gallery', (tester) async {
+      await openScreen(tester);
+
+      await tester.tap(find.byIcon(Icons.photo_camera_rounded).first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(l10nEn.mealImagePickFromGallery));
+      await tester.pump();
+      await settleIo(tester);
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(BottomSheet),
+          matching: find.byType(TextField),
+        ),
+        'toast',
+      );
+      await tester.tap(find.text(l10nEn.bulkAddPhotoAnalyseLabel));
+      await settleIo(tester);
+
+      expect(reader.captions, ['toast']);
+    });
+
+    testWidgets('shows that it is preparing, and stops when done', (
+      tester,
+    ) async {
+      await openScreen(tester, gateEncode: true);
+      await pickFromCamera(tester);
+
+      expect(find.text(l10nEn.bulkAddPhotoPreparingLabel), findsOneWidget);
+
+      preparer.finish();
+      await settleIo(tester);
+
+      expect(find.text(l10nEn.bulkAddPhotoPreparingLabel), findsNothing);
+      expect(reader.calls, 0, reason: 'finishing the encode sends nothing');
+    });
+
+    testWidgets('Analyse while the encode runs waits for it, then sends once', (
+      tester,
+    ) async {
+      await openScreen(tester, gateEncode: true);
+      await pickFromCamera(tester);
+
+      await tester.tap(find.text(l10nEn.bulkAddPhotoAnalyseLabel));
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(reader.calls, 0, reason: 'the photo is not ready');
+      expect(
+        find.text(l10nEn.bulkAddPhotoCaptionHint),
+        findsOneWidget,
+        reason: 'the sheet stays open while it waits',
+      );
+
+      preparer.finish();
+      await settleIo(tester);
+
+      expect(reader.calls, 1);
+    });
+
+    testWidgets('backing out sends nothing and deletes the cache copy', (
+      tester,
+    ) async {
+      await openScreen(tester, gateEncode: true);
+      await pickFromCamera(tester);
+      expect(File(pickedPath).existsSync(), isTrue);
+
+      // Dismiss the sheet with the encode still running.
+      Navigator.of(tester.element(find.byType(BottomSheet))).pop();
+      await tester.pump(const Duration(milliseconds: 400));
+      preparer.finish();
+      await settleIo(tester);
+
+      expect(reader.calls, 0);
+      expect(
+        File(pickedPath).existsSync(),
+        isFalse,
+        reason: 'the encoder removes the picker\'s copy whether or not it is used',
+      );
+      expect(find.text(l10nEn.bulkAddPhotoAnalyseLabel), findsNothing);
+    });
+
+    testWidgets('a photo that could not be encoded is reported, not sent', (
+      tester,
+    ) async {
+      await openScreen(tester);
+      preparer.result = null;
+      await pickFromCamera(tester);
+
+      await tester.tap(find.text(l10nEn.bulkAddPhotoAnalyseLabel));
+      await settleIo(tester);
+
+      expect(reader.calls, 0);
+      expect(find.text(l10nEn.bulkAddPhotoUnreadableLabel), findsOneWidget);
+    });
+  });
+
+  test('the confirm label is a real plural', () {
+    expect(l10nEn.bulkAddSubmitLabel(0), 'Log 0 items');
+    expect(l10nEn.bulkAddSubmitLabel(1), 'Log 1 item');
+    expect(l10nEn.bulkAddSubmitLabel(3), 'Log 3 items');
+  });
+
+  testWidgets('one row to log reads "Log 1 item"', (tester) async {
+    await _register({
+      'toast': [_meal('Toast')],
+    });
     await tester.pumpWidget(_app());
     await tester.pumpAndSettle();
     tester.state<NavigatorState>(find.byType(Navigator)).pushNamed('/bulk');
     await tester.pumpAndSettle();
 
-    for (final choice in [
-      l10nEn.mealImageTakePhoto,
-      l10nEn.mealImagePickFromGallery,
-    ]) {
-      await tester.tap(find.byIcon(Icons.photo_camera_rounded).first);
-      await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first, '100g toast');
+    await tester.tap(find.text(l10nEn.bulkAddParseLabel));
+    await tester.pumpAndSettle();
 
-      final caption = find.descendant(
-        of: find.byType(BottomSheet),
-        matching: find.byType(TextField),
-      );
-      expect(caption, findsOneWidget);
-      expect(find.text(l10nEn.bulkAddPhotoCaptionHint), findsOneWidget);
-      expect(find.text(l10nEn.bulkAddPhotoCaptionDisclosure), findsOneWidget);
-
-      await tester.enterText(caption, 'katsu chicken wrap from a cafe');
-      await tester.tap(find.text(choice));
-      await tester.pumpAndSettle();
-    }
-
-    expect(sources, [ImageSource.camera.index, ImageSource.gallery.index]);
+    expect(find.text('Log 1 item'), findsOneWidget);
+    expect(find.text('Log 1 items'), findsNothing);
   });
-
 
   testWidgets('a photo with no food says so, not "nothing to log yet"', (
     tester,
@@ -3022,4 +3241,78 @@ class _MemoryRecipes implements RecipeRepository {
   @override
   Future<void> addAllRecipeDBOs(List<RecipeDBO> recipes) =>
       throw UnimplementedError();
+}
+
+/// 1x1 PNG, so the thumbnail has something decodable.
+final _tinyPng = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+);
+
+/// Counts how often the model is asked, and with what caption.
+class _CountingPhotoReader implements ReadMealPhotoUseCase {
+  final MealPhotoReadResult reading;
+  var calls = 0;
+  final captions = <String?>[];
+
+  _CountingPhotoReader(this.reading);
+
+  @override
+  Future<MealPhotoReadResult> read(
+    MealPhoto photo, {
+    String? localeCode,
+    String? caption,
+  }) async {
+    calls++;
+    captions.add(caption);
+    return reading;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+/// Stands in for the encoder. The cache-copy deletion is the real one — the
+/// real `encodeAndDiscardSource` runs against a temporary "cache" — and only
+/// the native image compression, which does not exist in a test, is replaced
+/// by a canned photo. [gated] holds the result until [finish].
+class _GatedPreparer implements MealPhotoPreparer {
+  final String cacheRoot;
+  final bool gated;
+  final _gate = Completer<void>();
+  var started = 0;
+  MealPhoto? result = MealPhoto(
+    bytes: Uint8List.fromList([1, 2, 3]),
+    mediaType: 'image/webp',
+  );
+
+  _GatedPreparer(this.cacheRoot, {required this.gated});
+
+  void finish() {
+    if (!_gate.isCompleted) _gate.complete();
+  }
+
+  @override
+  Future<Uint8List?> thumbnail(String sourcePath) async => _tinyPng;
+
+  @override
+  Future<MealPhoto?> prepare(String sourcePath, MealPhotoFormat format) async {
+    started++;
+    // The encode "takes a while": the file is still there until it is done.
+    if (gated) await _gate.future;
+    try {
+      // The root zone, so the file work is real I/O rather than something the
+      // test's fake clock has to be coaxed into finishing.
+      await Zone.root.run(
+        () => MealPhotoEncoder.encodeAndDiscardSource(
+          sourcePath,
+          format: format,
+          cacheRoots: [cacheRoot],
+        ),
+      );
+    } catch (_) {
+      // No native encoder in a test; the `finally` inside has already removed
+      // the file, which is the part under test.
+    }
+    return result;
+  }
 }

@@ -24,6 +24,7 @@ import 'package:opennutritracker/features/add_meal/domain/usecase/save_photo_dis
 import 'package:opennutritracker/features/add_meal/domain/usecase/read_meal_text_usecase.dart';
 import 'package:opennutritracker/features/add_meal/presentation/bloc/bulk_add_bloc.dart';
 import 'package:opennutritracker/features/add_meal/util/meal_photo_encoder.dart';
+import 'package:opennutritracker/features/add_meal/util/meal_photo_preparer.dart';
 import 'package:opennutritracker/features/add_meal/util/portion_label.dart';
 import 'package:opennutritracker/features/add_meal/util/portion_unit.dart';
 import 'package:opennutritracker/features/custom_portion/domain/usecase/add_custom_portion_usecase.dart';
@@ -1607,16 +1608,10 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
       AiProvider.ownServer =>
         S.of(context).bulkAddPhotoDisclosureOwnServer(destination.name),
     };
-    // Typed before the picture is chosen, so the same field serves the camera
-    // and the gallery. It lives in the sheet and comes back with the choice;
-    // it is never kept, and it travels only with the photo it was typed for.
-    final choice = await showModalBottomSheet<_PhotoChoice>(
+    final source = await showModalBottomSheet<ImageSource>(
       context: context,
-      isScrollControlled: true,
       builder: (sheetContext) => _PhotoSourceSheet(disclosure: disclosure),
     );
-    final source = choice?.source;
-    final captionText = choice?.caption ?? '';
     if (source == null || !mounted) return;
 
     final XFile? picked;
@@ -1640,28 +1635,32 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
     // A cancelled picker is not a failure and says nothing to the user.
     if (picked == null || !mounted) return;
 
-    final MealPhoto? photo;
-    try {
-      // Discards the picker's cache copy once it has been encoded — see
-      // [MealPhotoEncoder.encodeAndDiscardSource]. Without it the app leaves
-      // the photo on disk, which the settings disclosure says it does not.
-      photo = await MealPhotoEncoder.encodeAndDiscardSource(
-        picked.path,
-        // Per destination, not per app: a server the user runs may be
-        // llama.cpp, which cannot decode WebP at all (#747).
-        format: MealPhotoFormat.forProvider(destination.provider),
-      );
-    } catch (e, stackTrace) {
-      // Never logged with the path: on Android the picker's temp filename
-      // can carry the original image name.
-      _log.warning('Encoding a meal photo failed', e, stackTrace);
-      if (!mounted) return;
-      _bloc.add(const ReadMealPhotoFailedEvent(BulkAddPhotoError.unreadable));
+    // The thumbnail is read before the encode starts, because the encode
+    // deletes the picker's cache copy when it finishes. It lives in memory for
+    // as long as the sheet is open and no longer.
+    final thumbnail = await locator<MealPhotoPreparer>().thumbnail(picked.path);
+    if (!mounted) {
+      unawaited(_prepare(picked.path, destination.provider));
       return;
     }
-    if (!mounted) return;
 
-    if (photo == null) {
+    // Started now, not on Analyse, so the wait overlaps the typing. Only the
+    // encode runs early: the model is asked once, from the sheet's buttons.
+    final encoding = _prepare(picked.path, destination.provider);
+
+    final choice = await showModalBottomSheet<_CaptionChoice>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) =>
+          _PhotoCaptionSheet(thumbnail: thumbnail, encoding: encoding),
+    );
+    // Backed out: nothing is sent. The encode that is still running (or has
+    // finished) is left to complete, and its own `finally` removes the cache
+    // copy; the encoded bytes are simply never used.
+    if (choice == null || !mounted) return;
+
+    final encoded = choice.encoded;
+    if (encoded.photo == null) {
       _bloc.add(const ReadMealPhotoFailedEvent(BulkAddPhotoError.unreadable));
       return;
     }
@@ -1671,12 +1670,33 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
 
     _bloc.add(
       ReadMealPhotoEvent(
-        photo: photo,
+        photo: encoded.photo!,
         usesImperialUnits: _args.usesImperialUnits,
         localeCode: Localizations.localeOf(context).languageCode,
-        caption: captionText.isEmpty ? null : captionText,
+        caption: choice.caption,
       ),
     );
+  }
+
+  /// Encodes the picked file for [provider] and discards the picker's copy —
+  /// see [MealPhotoEncoder.encodeAndDiscardSource]. Never throws: a failure is
+  /// part of the outcome, so a sheet that is waiting on it and a sheet that was
+  /// abandoned both see the same thing.
+  Future<_Encoded> _prepare(String path, AiProvider provider) async {
+    try {
+      final photo = await locator<MealPhotoPreparer>().prepare(
+        path,
+        // Per destination, not per app: a server the user runs may be
+        // llama.cpp, which cannot decode WebP at all (#747).
+        MealPhotoFormat.forProvider(provider),
+      );
+      return (photo: photo);
+    } catch (e, stackTrace) {
+      // Never logged with the path: on Android the picker's temp filename
+      // can carry the original image name.
+      _log.warning('Encoding a meal photo failed', e, stackTrace);
+      return (photo: null);
+    }
   }
 
   void _resetAmountControllers() {
@@ -1914,30 +1934,100 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
   }
 }
 
-/// What the photo sheet hands back: where the picture comes from, and what the
-/// user said about it (empty when nothing).
-class _PhotoChoice {
-  final ImageSource source;
-  final String caption;
+/// The outcome of encoding a picked photo: the photo, or null when it could
+/// not be encoded or was too large to send.
+typedef _Encoded = ({MealPhoto? photo});
 
-  const _PhotoChoice(this.source, this.caption);
+/// What the caption sheet hands back for Analyse or Skip caption.
+class _CaptionChoice {
+  final _Encoded encoded;
+
+  /// Null for Skip caption and for an empty field.
+  final String? caption;
+
+  const _CaptionChoice(this.encoded, this.caption);
 }
 
-/// The sheet shown before a photograph is chosen: the disclosure, an optional
-/// caption, and the two sources. A widget of its own so the caption's
-/// controller is disposed with the sheet, after its exit animation, rather
-/// than while the field is still on screen.
-class _PhotoSourceSheet extends StatefulWidget {
+/// The first sheet: the disclosure and where the picture comes from.
+class _PhotoSourceSheet extends StatelessWidget {
   final String disclosure;
 
   const _PhotoSourceSheet({required this.disclosure});
 
   @override
-  State<_PhotoSourceSheet> createState() => _PhotoSourceSheetState();
+  Widget build(BuildContext context) {
+    final s = S.of(context);
+    return SafeArea(
+      child: Wrap(
+        children: [
+          // The disclosure sits here rather than in a dialog the user has
+          // to dismiss: this is the moment a photograph would leave the
+          // device, and it is the last moment they can decline.
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+            child: Text(
+              '$disclosure '
+              '${s.bulkAddPhotoDisclosureCommon}\n\n'
+              // The photo path has no deterministic fallback, so this is
+              // the only surface besides Settings where a user opts into a
+              // model. The stability note belongs on both.
+              '${s.aiAssistExperimentalNote}',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+          Semantics(
+            identifier: 'bulk-add-photo-camera',
+            child: ListTile(
+              leading: const Icon(Icons.photo_camera_rounded),
+              title: Text(s.mealImageTakePhoto),
+              onTap: () => Navigator.of(context).pop(ImageSource.camera),
+            ),
+          ),
+          Semantics(
+            identifier: 'bulk-add-photo-gallery',
+            child: ListTile(
+              leading: const Icon(Icons.photo_library_rounded),
+              title: Text(s.mealImagePickFromGallery),
+              onTap: () => Navigator.of(context).pop(ImageSource.gallery),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
-class _PhotoSourceSheetState extends State<_PhotoSourceSheet> {
+/// The second sheet, shown right after a photo is picked: the thumbnail, a
+/// caption field with the keyboard up, and the two ways to go on.
+///
+/// The encode is already running behind it ([encoding]); a small indicator says
+/// so. **Nothing is sent from here until a button is tapped**, and then exactly
+/// once: Analyse sends the photo with the caption, Skip caption sends it
+/// without. Tapping either while the encode is still running waits for it, with
+/// the sheet staying open and the buttons busy, then closes with the result.
+/// Dismissing the sheet any other way returns null, and nothing is sent.
+class _PhotoCaptionSheet extends StatefulWidget {
+  final Uint8List? thumbnail;
+  final Future<_Encoded> encoding;
+
+  const _PhotoCaptionSheet({required this.thumbnail, required this.encoding});
+
+  @override
+  State<_PhotoCaptionSheet> createState() => _PhotoCaptionSheetState();
+}
+
+class _PhotoCaptionSheetState extends State<_PhotoCaptionSheet> {
   final _caption = TextEditingController();
+  bool _preparing = true;
+  bool _sending = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.encoding.whenComplete(() {
+      if (mounted) setState(() => _preparing = false);
+    });
+  }
 
   @override
   void dispose() {
@@ -1945,47 +2035,94 @@ class _PhotoSourceSheetState extends State<_PhotoSourceSheet> {
     super.dispose();
   }
 
-  void _choose(ImageSource source) =>
-      Navigator.of(context).pop(_PhotoChoice(source, _caption.text.trim()));
+  Future<void> _go({required bool withCaption}) async {
+    if (_sending) return;
+    final text = withCaption ? _caption.text.trim() : '';
+    setState(() => _sending = true);
+    final encoded = await widget.encoding;
+    if (!mounted) return;
+    Navigator.of(context).pop(
+      _CaptionChoice(encoded, text.isEmpty ? null : text),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final s = S.of(context);
+    final theme = Theme.of(context);
     return SingleChildScrollView(
       child: Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.viewInsetsOf(context).bottom,
+        ),
         child: SafeArea(
-          child: Wrap(
-            children: [
-              // The disclosure sits here rather than in a dialog the user has
-              // to dismiss: this is the moment a photograph would leave the
-              // device, and it is the last moment they can decline.
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                child: Text(
-                  '${widget.disclosure} '
-                  '${s.bulkAddPhotoDisclosureCommon}\n\n'
-                  // The photo path has no deterministic fallback, so this is
-                  // the only surface besides Settings where a user opts into a
-                  // model. The stability note belongs on both.
-                  '${s.aiAssistExperimentalNote}',
-                  style: Theme.of(context).textTheme.bodySmall,
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: SizedBox(
+                        width: 72,
+                        height: 72,
+                        child: widget.thumbnail == null
+                            ? const Icon(Icons.image_outlined)
+                            : Image.memory(
+                                widget.thumbnail!,
+                                fit: BoxFit.cover,
+                                cacheWidth: 216,
+                                errorBuilder: (_, _, _) =>
+                                    const Icon(Icons.image_outlined),
+                              ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    if (_preparing)
+                      Expanded(
+                        child: Semantics(
+                          identifier: 'bulk-add-photo-preparing',
+                          child: Row(
+                            children: [
+                              const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  s.bulkAddPhotoPreparingLabel,
+                                  style: theme.textTheme.bodySmall,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                child: Semantics(
+                const SizedBox(height: 12),
+                Semantics(
                   identifier: 'bulk-add-photo-caption',
                   child: TextField(
                     controller: _caption,
+                    autofocus: true,
                     minLines: 1,
                     maxLines: 3,
+                    enabled: !_sending,
                     textInputAction: TextInputAction.done,
                     inputFormatters: [
                       LengthLimitingTextInputFormatter(
                         mealPhotoCaptionMaxChars,
                       ),
                     ],
+                    onSubmitted: (_) => _go(withCaption: true),
                     decoration: InputDecoration(
                       hintText: s.bulkAddPhotoCaptionHint,
                       helperText: s.bulkAddPhotoCaptionDisclosure,
@@ -1994,24 +2131,41 @@ class _PhotoSourceSheetState extends State<_PhotoSourceSheet> {
                     ),
                   ),
                 ),
-              ),
-              Semantics(
-                identifier: 'bulk-add-photo-camera',
-                child: ListTile(
-                  leading: const Icon(Icons.photo_camera_rounded),
-                  title: Text(s.mealImageTakePhoto),
-                  onTap: () => _choose(ImageSource.camera),
+                const SizedBox(height: 12),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    Semantics(
+                      identifier: 'bulk-add-photo-skip-caption',
+                      child: TextButton(
+                        onPressed: _sending
+                            ? null
+                            : () => _go(withCaption: false),
+                        child: Text(s.bulkAddPhotoSkipCaptionLabel),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Semantics(
+                      identifier: 'bulk-add-photo-analyse',
+                      child: FilledButton(
+                        onPressed: _sending
+                            ? null
+                            : () => _go(withCaption: true),
+                        child: _sending
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : Text(s.bulkAddPhotoAnalyseLabel),
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-              Semantics(
-                identifier: 'bulk-add-photo-gallery',
-                child: ListTile(
-                  leading: const Icon(Icons.photo_library_rounded),
-                  title: Text(s.mealImagePickFromGallery),
-                  onTap: () => _choose(ImageSource.gallery),
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
