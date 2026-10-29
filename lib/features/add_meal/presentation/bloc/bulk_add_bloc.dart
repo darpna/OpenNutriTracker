@@ -6,6 +6,8 @@ import 'package:opennutritracker/features/add_meal/domain/meal_photo_interpreter
 import 'package:opennutritracker/features/add_meal/domain/usecase/read_meal_photo_usecase.dart';
 import 'package:opennutritracker/features/add_meal/domain/usecase/read_meal_text_usecase.dart';
 import 'package:opennutritracker/features/add_meal/domain/usecase/resolve_parsed_meals_usecase.dart';
+import 'package:opennutritracker/features/add_meal/domain/entity/meal_nutriments_entity.dart';
+import 'package:opennutritracker/features/add_meal/domain/photo_estimate.dart';
 import 'package:opennutritracker/features/add_meal/util/ai_estimate_meal.dart';
 import 'package:opennutritracker/features/add_meal/util/estimate_settle.dart';
 import 'package:opennutritracker/features/add_meal/util/meal_text_parser.dart';
@@ -134,6 +136,18 @@ class BulkAddRow extends Equatable {
     final quantity = amountValue;
     if (food == null || quantity == null || quantity <= 0) return null;
     return convertQuantityToBaseUnit(quantity, effectiveUnit, food);
+  }
+
+  /// Protein, carbohydrate and fat at the row's current amount, in grams, when
+  /// the food reports them.
+  double? get proteinG => _macro((n) => n.proteinsPerUnit);
+  double? get carbsG => _macro((n) => n.carbohydratesPerUnit);
+  double? get fatG => _macro((n) => n.fatPerUnit);
+
+  double? _macro(double? Function(MealNutrimentsEntity) perUnit) {
+    final grams = baseAmount;
+    final value = meal == null ? null : perUnit(meal!.nutriments);
+    return grams == null || value == null ? null : value * grams;
   }
 
   /// The row's energy at its current amount, when the food reports one.
@@ -545,6 +559,14 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
             MealPhotoFailure.transient => BulkAddPhotoError.transient,
           }),
         );
+      case MealPhotoRead(:final result) when result.estimate != null:
+        // A photograph is read as a recipe: its ingredients already carry their
+        // numbers, so nothing is searched for. See [_emitEstimate].
+        _emitEstimate(
+          result.estimate!,
+          emit,
+          usesImperialUnits: event.usesImperialUnits,
+        );
       case MealPhotoRead(:final result):
         // An empty list is an answer, not a failure: the model looked and
         // found no food. It lands on the same "nothing to log" message the
@@ -573,6 +595,60 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
     if (state is! BulkAddLoadingState) return;
     _attempt++;
     emit(const BulkAddInitial());
+  }
+
+  /// Rows for a photo read as a recipe: one per ingredient, in grams, each a food
+  /// of its own whose per-100 g values reproduce the ingredient's numbers at its
+  /// grams. Editing the grams scales them, and nothing is looked up.
+  void _emitEstimate(
+    PhotoRecipeEstimate estimate,
+    Emitter<BulkAddState> emit, {
+    required bool usesImperialUnits,
+  }) {
+    final rows = [
+      for (final ingredient in estimate.ingredients)
+        _rowForIngredient(ingredient),
+    ];
+    emit(
+      BulkAddLoadedState(
+        rows: rows,
+        parseErrors: const [],
+        usesImperialUnits: usesImperialUnits,
+        source: BulkAddReadSource.photo,
+        dish: BulkAddDish(
+          name: estimate.dish,
+          componentCount: rows.length,
+          // The ingredients are the point of the result: open, as the answer to
+          // "what is in this", with the dish row above as their sum.
+          expanded: true,
+          estimate: estimate,
+        ),
+      ),
+    );
+  }
+
+  BulkAddRow _rowForIngredient(EstimatedIngredient ingredient) {
+    final meal = ingredientMeal(ingredient);
+    final item = ResolvedMealItem(
+      // `estimated` stays false: every amount in a photo result is a guess, and
+      // the row says so once, with the sparkle on generated numbers.
+      parsed: ParsedMealItem(
+        query: ingredient.name,
+        quantity: ingredient.grams,
+        unit: 'g',
+      ),
+      candidates: [meal],
+      selectedIndex: 0,
+      confidence: 1.0,
+      usesAiEstimate: ingredient.source == IngredientSource.ai,
+    );
+    return BulkAddRow(
+      resolved: item,
+      selectedIndex: 0,
+      amountText: _amountText(ingredient.grams),
+      unit: UnitDropdownItem.g.toString(),
+      fromPhoto: true,
+    );
   }
 
   /// Shared by both readers: resolve whatever was extracted against the food

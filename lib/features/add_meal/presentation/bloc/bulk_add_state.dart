@@ -110,20 +110,26 @@ class BulkAddDish extends Equatable {
   final int componentCount;
   final bool expanded;
 
+  /// The recipe the dish was read as, with the model's confidence and
+  /// assumptions; null for a dish that did not come from a photo estimate.
+  final PhotoRecipeEstimate? estimate;
+
   const BulkAddDish({
     required this.name,
     required this.componentCount,
     this.expanded = false,
+    this.estimate,
   });
 
   BulkAddDish copyWith({bool? expanded}) => BulkAddDish(
     name: name,
     componentCount: componentCount,
     expanded: expanded ?? this.expanded,
+    estimate: estimate,
   );
 
   @override
-  List<Object?> get props => [name, componentCount, expanded];
+  List<Object?> get props => [name, componentCount, expanded, estimate];
 }
 
 class BulkAddLoadedState extends BulkAddState {
@@ -183,6 +189,16 @@ class BulkAddLoadedState extends BulkAddState {
   double get dishWeightG => dishRows
       .where((row) => row.willBeLogged)
       .map((row) => row.baseAmount ?? 0)
+      .fold(0.0, (sum, grams) => sum + grams);
+
+  /// Protein, carbohydrate and fat over the same components, in grams.
+  double get dishProteinG => _dishSum((row) => row.proteinG);
+  double get dishCarbsG => _dishSum((row) => row.carbsG);
+  double get dishFatG => _dishSum((row) => row.fatG);
+
+  double _dishSum(double? Function(BulkAddRow) of) => dishRows
+      .where((row) => row.willBeLogged)
+      .map((row) => of(row) ?? 0)
       .fold(0.0, (sum, grams) => sum + grams);
 
   /// The dish's energy over the same components, or null when none reports one.
