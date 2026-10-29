@@ -3,9 +3,13 @@ name: Darp Gemini probe
 # Fork-only diagnostic. Asks Google's OpenAI-compatible endpoint what the app's
 # setup check asks, through the real client, schema, prompts and validators,
 # and logs the request (key removed, image bytes elided), the raw status and
-# body, what was parsed, and what was refused. Manual only; it spends a few
+# body, what was parsed, and what was refused. Manual (or a push to its branch); it spends a few
 # requests on the GEMINI_API_KEY secret and nothing else.
 on:
+  # A manual run can only start from a workflow file on the default branch, so
+  # while this is being worked on it also runs on every push to its own branch.
+  push:
+    branches: [feat/gemini-compat]
   workflow_dispatch:
     inputs:
       model:
@@ -25,6 +29,11 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # A push runs both models; a manual run runs the one asked for.
+        model: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.model) || '["gemini-3.8-flash","gemini-3.5-flash-lite"]') }}
     steps:
       # Without the secret there is nothing to probe. Say so and stop green,
       # rather than fail a run that could not have told us anything.
@@ -71,6 +80,6 @@ jobs:
         if: steps.key.outputs.present == 'true'
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ inputs.model }}
-          PROBE_MODE: ${{ inputs.mode }}
+          GEMINI_MODEL: ${{ matrix.model }}
+          PROBE_MODE: ${{ inputs.mode || 'both' }}
         run: flutter test tool_test/gemini_probe_test.dart --reporter expanded
