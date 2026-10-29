@@ -140,6 +140,7 @@ class OpenAiMealItemsApi implements MealItemsApi, MealPhotoToolApi {
         'provider returned ${response.statusCode}',
         failure: _failureFor(response.statusCode, _errorFields(response.body)),
         statusCode: response.statusCode,
+        providerMessage: providerErrorMessage(response.body),
       );
     }
 

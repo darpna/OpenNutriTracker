@@ -545,7 +545,11 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
     switch (reading) {
       case MealPhotoUnavailable():
         emit(const BulkAddPhotoErrorState(BulkAddPhotoError.unavailable));
-      case MealPhotoFailed(:final failure):
+      case MealPhotoFailed(
+        :final failure,
+        :final statusCode,
+        :final providerMessage,
+      ):
         emit(
           BulkAddPhotoErrorState(switch (failure) {
             MealPhotoFailure.auth => BulkAddPhotoError.auth,
@@ -557,7 +561,8 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
               BulkAddPhotoError.insecureDestination,
             MealPhotoFailure.billing => BulkAddPhotoError.billing,
             MealPhotoFailure.transient => BulkAddPhotoError.transient,
-          }),
+            MealPhotoFailure.providerError => BulkAddPhotoError.providerError,
+          }, httpStatus: statusCode, providerMessage: providerMessage),
         );
       case MealPhotoRead(:final result) when result.estimate != null:
         // A photograph is read as a recipe: its ingredients already carry their

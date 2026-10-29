@@ -66,7 +66,9 @@ enum BulkAddPhotoError {
   /// advice here and following it never stops being wrong.
   auth,
 
-  /// No network, a rate limit, a provider error — worth another attempt.
+  /// No answer reached us (no network, a dropped connection, a timeout) —
+  /// worth another attempt. A provider that answered with an error is
+  /// [providerError].
   transient,
 
   /// The account is out of credit, or has hit a spend cap. Kept apart from
@@ -91,15 +93,30 @@ enum BulkAddPhotoError {
   /// The app declined to send a photograph in plaintext to a public address.
   /// The fix is the destination or its scheme, not the model or the network.
   insecureDestination,
+
+  /// The provider answered with an error that is not a bad key, no credit or
+  /// an unsupported model: a rate limit, a server error, or a 400. Shown with
+  /// the status and the provider's own text, since the cause is in them.
+  providerError,
 }
 
 class BulkAddPhotoErrorState extends BulkAddState {
   final BulkAddPhotoError error;
 
-  const BulkAddPhotoErrorState(this.error);
+  /// The provider's HTTP status, when the failure came from one.
+  final int? httpStatus;
+
+  /// The provider's error text (trimmed, key-shaped strings masked).
+  final String? providerMessage;
+
+  const BulkAddPhotoErrorState(
+    this.error, {
+    this.httpStatus,
+    this.providerMessage,
+  });
 
   @override
-  List<Object?> get props => [error];
+  List<Object?> get props => [error, httpStatus, providerMessage];
 }
 
 /// The one composed dish a photo was read as. Its components are the first

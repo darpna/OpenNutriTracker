@@ -123,6 +123,7 @@ class AnthropicMealItemsApi implements MealItemsApi, MealPhotoToolApi {
         'provider returned ${response.statusCode}',
         failure: _failureFor(response.statusCode),
         statusCode: response.statusCode,
+        providerMessage: providerErrorMessage(response.body),
       );
     }
 

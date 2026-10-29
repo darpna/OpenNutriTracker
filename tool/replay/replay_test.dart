@@ -251,11 +251,18 @@ void main() {
             caption: caption,
             state: state,
           ),
-          BulkAddPhotoErrorState(:final error) => ReplayResult(
-            id: id,
-            caption: caption,
-            error: error.name,
-          ),
+          BulkAddPhotoErrorState(
+            :final error,
+            :final httpStatus,
+            :final providerMessage,
+          ) =>
+            ReplayResult(
+              id: id,
+              caption: caption,
+              error: error.name,
+              httpStatus: httpStatus,
+              providerError: providerMessage,
+            ),
           _ => ReplayResult(id: id, caption: caption, error: 'search_failed'),
         };
         // ignore: avoid_print

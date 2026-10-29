@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 /// What a caller can usefully do about a failed interpretation.
 ///
 /// Provider-neutral on purpose. The same HTTP status means different things
@@ -76,7 +78,8 @@ enum MealInterpreterFailure {
 
 /// Raised when an interpreter cannot produce a result. Carries no response
 /// body: provider payloads can echo the submitted text, and this ends up in
-/// logs.
+/// logs. The one thing taken from a refused request's body is its error text,
+/// capped and with key-shaped strings masked ([providerMessage]).
 ///
 /// Shared by the text and photo interpreters. The two differ in what the
 /// caller does about it — a failed text read falls back to the deterministic
@@ -100,6 +103,15 @@ class MealInterpreterException implements Exception {
   /// correctly needs to know which provider answered.
   final int? statusCode;
 
+  /// What the provider said about a refused request, from its error body:
+  /// trimmed, with anything key-shaped masked (see [providerErrorMessage]).
+  /// Null when it said nothing readable.
+  ///
+  /// **For people, never for decisions.** It exists so a wrong key, a rate
+  /// limit and a bad photo stop looking alike once they reach a screen or a
+  /// replay file. Only the error text is kept, never the rest of the body.
+  final String? providerMessage;
+
   /// True when the provider answered 200 and what came back was not the shape
   /// asked for — a body that will not decode, a tool call with no usable
   /// arguments. The one failure the photo interpreter answers by asking again
@@ -112,16 +124,77 @@ class MealInterpreterException implements Exception {
     this.reason, {
     this.failure = MealInterpreterFailure.transient,
     this.statusCode,
+    this.providerMessage,
     this.badReply = false,
   });
 
   const MealInterpreterException.badReply(this.reason)
     : failure = MealInterpreterFailure.transient,
       statusCode = null,
+      providerMessage = null,
       badReply = true;
 
   @override
   String toString() =>
       'MealInterpreterException($reason, ${failure.name}'
       '${statusCode == null ? '' : ', status: $statusCode'})';
+}
+
+/// The longest provider message kept, in characters.
+const providerMessageMaxLength = 200;
+
+final _bearerToken = RegExp(r'\b(Bearer|Basic)\s+\S+', caseSensitive: false);
+final _keyQueryParam = RegExp(
+  r'''([?&;](?:api[_-]?)?key=)[^&\s"']+''',
+  caseSensitive: false,
+);
+// A provider's own key prefix, including the half-hidden form some providers
+// echo back ("sk-proj-********abcd").
+final _prefixedKey = RegExp(
+  r'\b(?:sk|gsk|xai|pk|rk|AIza|ghp|hf)[-_][A-Za-z0-9_*\-]{6,}|\bAIza[A-Za-z0-9_\-]{10,}',
+);
+// Anything else that is one long unbroken token is more likely a secret than
+// a word.
+final _longToken = RegExp(r'[A-Za-z0-9_\-]{24,}');
+
+/// [raw] made safe to show: whitespace collapsed, anything that looks like an
+/// API key or bearer token replaced with `***`, cut to
+/// [providerMessageMaxLength]. Null when nothing is left.
+String? sanitizeProviderMessage(String? raw) {
+  if (raw == null) return null;
+  var text = raw.replaceAll(RegExp(r'\s+'), ' ').trim();
+  text = text
+      .replaceAllMapped(_bearerToken, (m) => '${m[1]} ***')
+      .replaceAllMapped(_keyQueryParam, (m) => '${m[1]}***')
+      .replaceAll(_prefixedKey, '***')
+      .replaceAll(_longToken, '***');
+  if (text.isEmpty) return null;
+  if (text.length > providerMessageMaxLength) {
+    text = '${text.substring(0, providerMessageMaxLength - 1).trimRight()}…';
+  }
+  return text;
+}
+
+/// The human-readable error text in a provider's non-2xx [body], sanitised by
+/// [sanitizeProviderMessage]. Reads the `error.message` shape OpenAI,
+/// Anthropic, Google and OpenRouter all use (Google sometimes wraps it in a
+/// one-element list), a bare `message`, or a plain-text body. A JSON body with
+/// no message, and HTML, give null rather than a dump of the page.
+String? providerErrorMessage(String body) {
+  final Object? decoded;
+  try {
+    decoded = jsonDecode(body);
+  } catch (_) {
+    final plain = body.trim();
+    return plain.startsWith('<') ? null : sanitizeProviderMessage(plain);
+  }
+  final root = decoded is List && decoded.isNotEmpty ? decoded.first : decoded;
+  if (root is! Map) return null;
+  final error = root['error'];
+  final message = error is Map
+      ? error['message']
+      : error is String
+      ? error
+      : root['message'];
+  return message is String ? sanitizeProviderMessage(message) : null;
 }

@@ -108,8 +108,12 @@ A run of 20 photos takes about seven minutes.
 - `dish` is set when the photo was read as one composed dish; its components are
   then the first `items`.
 - `unmatched` lists foods the model named that nothing could stand in for.
-- `error` is a failure kind (`transient`, `auth`, `unreadable`, …), never a
-  provider message.
+- `error` is a failure kind (`transient`, `auth`, `providerError`,
+  `unreadable`, …). `unreadable` means the photo could not be encoded; a
+  provider that answered with an HTTP error is never reported as that. For
+  those, `http_status` and `provider_error` carry the status and the
+  provider's error text (cut to 200 characters, key-shaped strings masked), so
+  a bad key, a rate limit and a bad photo can be told apart.
 - `grounded` is the dish total the app shows: the sum of the ingredients with
   the bundled USDA table's numbers where it matched. `ai_only` is the same
   ingredients (same grams) with only the model's numbers. Comparing the two over

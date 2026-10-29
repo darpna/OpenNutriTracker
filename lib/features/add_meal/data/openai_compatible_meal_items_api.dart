@@ -328,6 +328,7 @@ class OpenAiCompatibleMealItemsApi implements MealItemsApi, MealPhotoToolApi {
         'provider returned ${response.statusCode}',
         failure: failureFor(response.statusCode),
         statusCode: response.statusCode,
+        providerMessage: providerErrorMessage(response.body),
       );
     }
 
@@ -474,6 +475,11 @@ class OpenAiCompatibleMealItemsApi implements MealItemsApi, MealPhotoToolApi {
           ? failureFor(code)
           : MealInterpreterFailure.transient,
       statusCode: code is int ? code : null,
+      providerMessage: sanitizeProviderMessage(
+        error is Map && error['message'] is String
+            ? error['message'] as String
+            : null,
+      ),
     );
   }
 
