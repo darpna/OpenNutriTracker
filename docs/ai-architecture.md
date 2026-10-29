@@ -274,9 +274,15 @@ count is checked against its own portions — the database's and the user's cust
 `MealEntity.portions` by then. A miss swaps in the model's own gram estimate for the same amount
 (`settleEstimate`), so a count never lands on a food that cannot scale it.
 
-**A caption wins.** The photo sheet takes an optional line ("katsu chicken wrap from a cafe, ate
-half"), the same field for the camera and the gallery. It travels with the image as plain text and is
-never logged. An amount it states ("200g chicken") is found with the same parser the typed path uses
+**A caption wins.** Photo first, caption while it prepares: right after the photo is picked (camera or
+gallery) a sheet shows its thumbnail and a caption field with the keyboard up
+("katsu chicken wrap, 250 g"), and the encode starts in the background at once, so the wait overlaps
+the typing. The model is asked **once per photo, from the sheet's buttons only** — *Analyse* sends
+photo and caption, *Skip caption* sends the photo alone — never on the pick. Tapping either while the
+encode is still running waits for it. Dismissing the sheet sends nothing; the encode's own `finally`
+still removes the picker's cache copy and the encoded bytes are dropped
+([`meal_photo_preparer.dart`](../lib/features/add_meal/util/meal_photo_preparer.dart)). The caption
+travels with the image as plain text and is never logged. An amount it states ("200g chicken") is found with the same parser the typed path uses
 and replaces the model's estimate for the food it names, unflagged; a stated dish weight rescales
 the components. Words the parser cannot turn into an amount ("ate half") are left to the model, which
 was given the caption.
