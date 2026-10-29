@@ -120,19 +120,27 @@ class MealInterpreterException implements Exception {
   /// that a second request cannot change.
   final bool badReply;
 
+  /// True when the client stopped waiting for an answer. Whatever [failure]
+  /// that is reported as (`transient` at a hosted API, `timeout` at a server
+  /// the user runs), it is one of the failures a fallback provider is asked
+  /// to cover (see `ReadMealPhotoUseCase`).
+  final bool timedOut;
+
   const MealInterpreterException(
     this.reason, {
     this.failure = MealInterpreterFailure.transient,
     this.statusCode,
     this.providerMessage,
     this.badReply = false,
+    this.timedOut = false,
   });
 
   const MealInterpreterException.badReply(this.reason)
     : failure = MealInterpreterFailure.transient,
       statusCode = null,
       providerMessage = null,
-      badReply = true;
+      badReply = true,
+      timedOut = false;
 
   @override
   String toString() =>

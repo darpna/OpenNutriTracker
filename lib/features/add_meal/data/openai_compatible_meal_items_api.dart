@@ -81,6 +81,10 @@ class OpenRouterBroker {
 class OpenAiCompatibleMealItemsApi implements MealItemsApi, MealPhotoToolApi {
   static final _log = Logger('OpenAiCompatibleMealItemsApi');
 
+  /// Sampling settings for a repeatable answer: no randomness in the token
+  /// choice, nothing cut from the distribution.
+  static const sampling = {'temperature': 0, 'top_p': 1};
+
   static final openRouterEndpoint = Uri.parse(
     'https://openrouter.ai/api/v1/chat/completions',
   );
@@ -202,6 +206,12 @@ class OpenAiCompatibleMealItemsApi implements MealItemsApi, MealPhotoToolApi {
       'model': model,
       'max_tokens': spec.maxTokens + (gemini ? geminiThinkingAllowance : 0),
       if (gemini) 'reasoning_effort': geminiReasoningEffort,
+      // The same photo should read the same way twice: Groq with no
+      // temperature named the same dish differently on four of five photos
+      // across two runs. Not sent through OpenRouter, which with
+      // `require_parameters` refuses to route a parameter a model rejects —
+      // and the reasoning models in its catalogue reject `temperature`.
+      if (broker == null) ...sampling,
       // No top-level `system` field here: the OpenAI-compatible shape wants
       // it as the first message.
       'messages': [
@@ -329,6 +339,7 @@ class OpenAiCompatibleMealItemsApi implements MealItemsApi, MealPhotoToolApi {
       throw MealInterpreterException(
         'request timed out',
         failure: timeoutFailure,
+        timedOut: true,
       );
     } catch (e) {
       // Not logging `e`, for the same reason as the Anthropic client: a
