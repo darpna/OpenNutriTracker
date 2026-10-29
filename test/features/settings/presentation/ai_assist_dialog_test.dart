@@ -3102,31 +3102,6 @@ void main() {
     expect(await storage.readApiKey(), 'sk-test');
   });
 
-  testWidgets('the estimate fallback is on, and one tap turns it off', (
-    tester,
-  ) async {
-    // The one place a model's nutrition figures can reach the diary, so it is
-    // a stored setting with a visible control — and a checkbox, because the
-    // switch above it is the feature's own on/off.
-    await storage.writeApiKey('sk-test');
-    await tester.pumpWidget(_app(storage));
-    await tester.pumpAndSettle();
-
-    final box = find.bySemanticsIdentifier('ai-assist-estimate-fallback');
-    await tester.ensureVisible(box);
-    await tester.pumpAndSettle();
-    expect(find.text(l10nEn.aiAssistEstimateFallbackTitle), findsOneWidget);
-    expect(tester.widget<CheckboxListTile>(find.byType(CheckboxListTile)).value,
-        isTrue);
-    expect(await storage.isEstimateFallbackEnabled(), isTrue);
-
-    await tester.tap(find.byType(CheckboxListTile));
-    await tester.pumpAndSettle();
-
-    expect(await storage.isEstimateFallbackEnabled(), isFalse);
-    expect(await storage.isEnabled(), isTrue, reason: 'the feature stays on');
-  });
-
   testWidgets('removing the key clears it and offers the field again', (
     tester,
   ) async {

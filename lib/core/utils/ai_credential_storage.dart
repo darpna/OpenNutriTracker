@@ -277,7 +277,6 @@ class AiCredentialStorage {
 
   static const _enabledTag = 'AiAssistEnabledTag';
   static const _termsAcceptedTag = 'AiTermsAcceptedTag';
-  static const _estimateFallbackTag = 'AiEstimateFallbackTag';
   static const _providerTag = 'AiProviderTag';
   static const _modelTag = 'AiModelTag';
 
@@ -1074,7 +1073,6 @@ class AiCredentialStorage {
     await _storage.delete(key: _providerTag);
     await _storage.delete(key: _enabledTag);
     await _storage.delete(key: _termsAcceptedTag);
-    await _storage.delete(key: _estimateFallbackTag);
   });
 
   /// The legacy tag is the Anthropic slot under an older name, so it is
@@ -1178,23 +1176,6 @@ class AiCredentialStorage {
     }
     await _storage.write(key: _enabledTag, value: enabled ? 'true' : 'false');
   }
-
-  /// Whether a photograph's per-100 g macros may stand in for a food the
-  /// database cannot match. **On unless the user switched it off.**
-  ///
-  /// This is the one place a model's nutrition figures can reach the diary —
-  /// the rest of the AI feature takes names and amounts only, and a database
-  /// match that clears the confidence threshold is never overridden — so it is
-  /// a setting rather than a constant. Off, the photo reader still groups a dish
-  /// and keeps amount estimates; a component with no good match is simply left
-  /// unmatched for the user to resolve, as before.
-  Future<bool> isEstimateFallbackEnabled() async =>
-      await _storage.read(key: _estimateFallbackTag) != 'false';
-
-  Future<void> setEstimateFallbackEnabled(bool enabled) => _storage.write(
-    key: _estimateFallbackTag,
-    value: enabled ? 'true' : 'false',
-  );
 
   /// A fixed-length stand-in for a stored key, for a UI that must never show
   /// the value. Fixed-length on purpose: rendering the real length would
