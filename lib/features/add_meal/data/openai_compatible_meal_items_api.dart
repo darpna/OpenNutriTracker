@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:logging/logging.dart';
 import 'package:opennutritracker/core/utils/plaintext_destination_guard.dart';
+import 'package:opennutritracker/features/add_meal/data/gemini_compat.dart';
 import 'package:opennutritracker/features/add_meal/domain/meal_items_api.dart';
 import 'package:opennutritracker/features/add_meal/domain/meal_photo_reply.dart';
 import 'package:opennutritracker/features/add_meal/util/meal_text_parser.dart';
@@ -131,6 +132,12 @@ class OpenAiCompatibleMealItemsApi implements MealItemsApi, MealPhotoToolApi {
   /// the behaviour that was deliberate for them.
   final MealInterpreterFailure timeoutFailure;
 
+  /// Whether to apply Google's compatibility handling (see
+  /// `gemini_compat.dart`). Null decides by the address, which is what the app
+  /// does; a value is for a test or probe that needs to send the request
+  /// without it.
+  final bool? geminiCompat;
+
   OpenAiCompatibleMealItemsApi(
     this._client,
     this._apiKey, {
@@ -141,6 +148,7 @@ class OpenAiCompatibleMealItemsApi implements MealItemsApi, MealPhotoToolApi {
     this.failureFor = openRouterFailureFor,
     this.timeout = defaultTimeout,
     this.timeoutFailure = MealInterpreterFailure.transient,
+    this.geminiCompat,
   });
 
   /// The OpenRouter configuration, named so call sites read as intent rather
@@ -186,9 +194,14 @@ class OpenAiCompatibleMealItemsApi implements MealItemsApi, MealPhotoToolApi {
     MealContent content,
     String system,
   ) async {
+    // Google's endpoint takes an OpenAPI subset of the schema and spends
+    // `max_tokens` on thinking too; see gemini_compat.dart. Nobody else is
+    // affected.
+    final gemini = geminiCompat ?? isGeminiEndpoint(endpoint);
     final body = jsonEncode({
       'model': model,
-      'max_tokens': spec.maxTokens,
+      'max_tokens': spec.maxTokens + (gemini ? geminiThinkingAllowance : 0),
+      if (gemini) 'reasoning_effort': geminiReasoningEffort,
       // No top-level `system` field here: the OpenAI-compatible shape wants
       // it as the first message.
       'messages': [
@@ -201,7 +214,9 @@ class OpenAiCompatibleMealItemsApi implements MealItemsApi, MealPhotoToolApi {
           'function': {
             'name': spec.name,
             'description': spec.description,
-            'parameters': spec.schema,
+            'parameters': gemini
+                ? withoutAdditionalProperties(spec.schema)
+                : spec.schema,
             // **No `strict: true`.** It looks like free rigour and is not.
             //
             // OpenAI's strict mode requires every key in `properties` to
@@ -419,7 +434,19 @@ class OpenAiCompatibleMealItemsApi implements MealItemsApi, MealPhotoToolApi {
 
     final message = choice['message'];
     final toolCalls = message is Map ? message['tool_calls'] : null;
+    if ((toolCalls is! List || toolCalls.isEmpty) &&
+        choice['finish_reason'] == 'length') {
+      // Cut off by the answer budget before any call began — the budget went
+      // on something else (a thinking model's reasoning). Says nothing about
+      // whether the model can call tools, so it is not `unsupported`, which
+      // would close the capability for good.
+      _log.warning('Interpreter reply was cut off before a tool call');
+      throw const MealInterpreterException(
+        'response was cut off before a tool call',
+      );
+    }
     if (toolCalls is! List) {
+      _log.info('No tool call; finish_reason=${choice['finish_reason']}');
       throw MealInterpreterException(
         'response has no tool call',
         // Not the default `transient`, which would send the user to check a
