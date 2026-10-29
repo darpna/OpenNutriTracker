@@ -602,32 +602,41 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
     emit(const BulkAddInitial());
   }
 
-  /// Rows for a photo read as a recipe: one per ingredient, in grams, each a food
-  /// of its own whose per-100 g values reproduce the ingredient's numbers at its
-  /// grams. Editing the grams scales them, and nothing is looked up.
+  /// Rows for a photo read as recipes: per dish, one row per ingredient, in
+  /// grams, each a food of its own carrying the ingredient's per-100 g values.
+  /// Editing the grams scales the numbers, and nothing is looked up.
   void _emitEstimate(
-    PhotoRecipeEstimate estimate,
+    PhotoMealEstimate estimate,
     Emitter<BulkAddState> emit, {
     required bool usesImperialUnits,
   }) {
-    final rows = [
-      for (final ingredient in estimate.ingredients)
-        _rowForIngredient(ingredient),
-    ];
+    final rows = <BulkAddRow>[];
+    final dishes = <BulkAddDish>[];
+    for (final dish in estimate.dishes) {
+      rows.addAll([
+        for (final ingredient in dish.ingredients)
+          _rowForIngredient(ingredient),
+      ]);
+      dishes.add(
+        BulkAddDish(
+          name: dish.dish,
+          componentCount: dish.ingredients.length,
+          // One dish opens onto its ingredients, as the answer to "what is in
+          // this"; several start closed, so the plate reads as its dishes
+          // first.
+          expanded: estimate.dishes.length == 1,
+          estimate: dish,
+        ),
+      );
+    }
     emit(
       BulkAddLoadedState(
         rows: rows,
         parseErrors: const [],
         usesImperialUnits: usesImperialUnits,
         source: BulkAddReadSource.photo,
-        dish: BulkAddDish(
-          name: estimate.dish,
-          componentCount: rows.length,
-          // The ingredients are the point of the result: open, as the answer to
-          // "what is in this", with the dish row above as their sum.
-          expanded: true,
-          estimate: estimate,
-        ),
+        dishes: dishes,
+        photoEstimate: estimate,
       ),
     );
   }
@@ -645,7 +654,7 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
       candidates: [meal],
       selectedIndex: 0,
       confidence: 1.0,
-      usesAiEstimate: ingredient.source == IngredientSource.ai,
+      usesAiEstimate: isModelNumbers(ingredient),
     );
     return BulkAddRow(
       resolved: item,
@@ -706,12 +715,13 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
           usesImperialUnits: usesImperialUnits,
           source: source,
           modelFailure: modelFailure,
-          dish: dish == null
-              ? null
-              : BulkAddDish(
-                  name: dish.name,
-                  componentCount: dish.components.length,
-                ),
+          dishes: [
+            if (dish != null)
+              BulkAddDish(
+                name: dish.name,
+                componentCount: dish.components.length,
+              ),
+          ],
         ),
       );
     } catch (e, stackTrace) {
@@ -887,29 +897,32 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
     Emitter<BulkAddState> emit,
   ) {
     final current = state;
-    if (current is! BulkAddLoadedState || current.dish == null) return;
-    emit(
-      current.copyWith(
-        dish: current.dish!.copyWith(expanded: !current.dish!.expanded),
-      ),
-    );
+    if (current is! BulkAddLoadedState) return;
+    final index = event.dishIndex;
+    if (index < 0 || index >= current.dishes.length) return;
+    final dishes = [...current.dishes];
+    dishes[index] = dishes[index].copyWith(expanded: !dishes[index].expanded);
+    emit(current.copyWith(dishes: dishes));
   }
 
   /// Skips every component when any is still in, otherwise includes them all
-  /// again, so one tap on the dish row drops or restores the whole dish.
+  /// again, so one tap on a dish row drops or restores that whole dish.
   void _onToggleDishSkipped(
     ToggleDishSkippedEvent event,
     Emitter<BulkAddState> emit,
   ) {
     final current = state;
-    final dish = current is BulkAddLoadedState ? current.dish : null;
-    if (current is! BulkAddLoadedState || dish == null) return;
-    final skip = current.dishRows.any((row) => !row.skipped);
+    if (current is! BulkAddLoadedState) return;
+    final index = event.dishIndex;
+    if (index < 0 || index >= current.dishes.length) return;
+    final start = current.dishStart(index);
+    final end = start + current.dishes[index].componentCount;
+    final skip = current.dishRows(index).any((row) => !row.skipped);
     emit(
       current.copyWith(
         rows: [
           for (var i = 0; i < current.rows.length; i++)
-            i < dish.componentCount
+            i >= start && i < end
                 ? current.rows[i].copyWith(skipped: skip)
                 : current.rows[i],
         ],

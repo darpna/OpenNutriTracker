@@ -119,9 +119,9 @@ class BulkAddPhotoErrorState extends BulkAddState {
   List<Object?> get props => [error, httpStatus, providerMessage];
 }
 
-/// The one composed dish a photo was read as. Its components are the first
-/// [componentCount] of [BulkAddLoadedState.rows]; whatever else was on the
-/// plate follows them.
+/// One composed dish a photo was read as. Its components are a run of
+/// [BulkAddLoadedState.rows]: the dishes' runs come first, in order, and
+/// whatever else was on the plate follows them.
 class BulkAddDish extends Equatable {
   final String name;
   final int componentCount;
@@ -150,12 +150,18 @@ class BulkAddDish extends Equatable {
 }
 
 class BulkAddLoadedState extends BulkAddState {
-  /// The dish's components first, then the plate's separate foods.
+  /// Every dish's components first, dish by dish, then the plate's separate
+  /// foods.
   final List<BulkAddRow> rows;
 
-  /// Set when the photo was one composed dish. Shown as a single row that
-  /// expands to its components, and logged as one recipe.
-  final BulkAddDish? dish;
+  /// The composed dishes on the plate, in the order their components appear
+  /// in [rows]. Each is shown as a single row that expands to its components,
+  /// and logged as one recipe.
+  final List<BulkAddDish> dishes;
+
+  /// The whole photo estimate, when the rows came from one: which model
+  /// answered, and every dish's numbers before the user edited anything.
+  final PhotoMealEstimate? photoEstimate;
 
   /// Per-segment complaints from the parser, carrying the item number and
   /// the reason rather than a message — the string is built at the render
@@ -181,47 +187,71 @@ class BulkAddLoadedState extends BulkAddState {
     required this.usesImperialUnits,
     this.source = BulkAddReadSource.parser,
     this.modelFailure,
-    this.dish,
+    this.dishes = const [],
+    this.photoEstimate,
   });
 
   Iterable<BulkAddRow> get loggableRows =>
       rows.where((row) => row.willBeLogged);
 
-  /// The dish's component rows; empty when there is no dish.
-  List<BulkAddRow> get dishRows =>
-      dish == null ? const [] : rows.take(dish!.componentCount).toList();
+  /// Index into [rows] of dish [dish]'s first component.
+  int dishStart(int dish) => dishes
+      .take(dish)
+      .fold(0, (start, d) => start + d.componentCount);
 
-  /// The rows that are not part of the dish.
-  List<BulkAddRow> get plateRows =>
-      dish == null ? rows : rows.skip(dish!.componentCount).toList();
+  /// How many leading rows belong to a dish.
+  int get dishComponentCount => dishStart(dishes.length);
 
-  /// What the confirm button counts: the dish is one item however many
+  /// The dish row [index] is a component of, or null for a plate row.
+  int? dishOfRow(int index) {
+    var start = 0;
+    for (var d = 0; d < dishes.length; d++) {
+      final end = start + dishes[d].componentCount;
+      if (index >= start && index < end) return d;
+      start = end;
+    }
+    return null;
+  }
+
+  /// Dish [dish]'s component rows.
+  List<BulkAddRow> dishRows(int dish) => rows
+      .skip(dishStart(dish))
+      .take(dishes[dish].componentCount)
+      .toList();
+
+  /// The rows that are not part of a dish.
+  List<BulkAddRow> get plateRows => rows.skip(dishComponentCount).toList();
+
+  /// What the confirm button counts: each dish is one item however many
   /// components it has, and it is there only while one of them will be logged.
   int get loggableCount =>
       plateRows.where((row) => row.willBeLogged).length +
-      (dishRows.any((row) => row.willBeLogged) ? 1 : 0);
+      [
+        for (var d = 0; d < dishes.length; d++)
+          if (dishRows(d).any((row) => row.willBeLogged)) d,
+      ].length;
 
-  /// Total weight of the dish components that will be logged, in grams (a
-  /// millilitre counts as a gram, as the recipe maths does).
-  double get dishWeightG => dishRows
-      .where((row) => row.willBeLogged)
-      .map((row) => row.baseAmount ?? 0)
-      .fold(0.0, (sum, grams) => sum + grams);
+  /// Total weight of dish [dish]'s components that will be logged, in grams
+  /// (a millilitre counts as a gram, as the recipe maths does).
+  double dishWeightG(int dish) =>
+      _dishSum(dish, (row) => row.baseAmount);
 
   /// Protein, carbohydrate and fat over the same components, in grams.
-  double get dishProteinG => _dishSum((row) => row.proteinG);
-  double get dishCarbsG => _dishSum((row) => row.carbsG);
-  double get dishFatG => _dishSum((row) => row.fatG);
+  double dishProteinG(int dish) => _dishSum(dish, (row) => row.proteinG);
+  double dishCarbsG(int dish) => _dishSum(dish, (row) => row.carbsG);
+  double dishFatG(int dish) => _dishSum(dish, (row) => row.fatG);
 
-  double _dishSum(double? Function(BulkAddRow) of) => dishRows
-      .where((row) => row.willBeLogged)
-      .map((row) => of(row) ?? 0)
-      .fold(0.0, (sum, grams) => sum + grams);
+  double _dishSum(int dish, double? Function(BulkAddRow) of) =>
+      dishRows(dish)
+          .where((row) => row.willBeLogged)
+          .map((row) => of(row) ?? 0)
+          .fold(0.0, (sum, grams) => sum + grams);
 
-  /// The dish's energy over the same components, or null when none reports one.
-  double? get dishKcal {
+  /// Dish [dish]'s energy over the same components, or null when none reports
+  /// one.
+  double? dishKcal(int dish) {
     double? total;
-    for (final row in dishRows.where((row) => row.willBeLogged)) {
+    for (final row in dishRows(dish).where((row) => row.willBeLogged)) {
       final kcal = row.kcal;
       if (kcal != null) total = (total ?? 0) + kcal;
     }
@@ -230,20 +260,24 @@ class BulkAddLoadedState extends BulkAddState {
 
   bool get hasUnresolved => rows.any((row) => !row.isResolved);
 
-  BulkAddLoadedState copyWith({List<BulkAddRow>? rows, BulkAddDish? dish}) =>
-      BulkAddLoadedState(
-        rows: rows ?? this.rows,
-        parseErrors: parseErrors,
-        usesImperialUnits: usesImperialUnits,
-        source: source,
-        modelFailure: modelFailure,
-        dish: dish ?? this.dish,
-      );
+  BulkAddLoadedState copyWith({
+    List<BulkAddRow>? rows,
+    List<BulkAddDish>? dishes,
+  }) => BulkAddLoadedState(
+    rows: rows ?? this.rows,
+    parseErrors: parseErrors,
+    usesImperialUnits: usesImperialUnits,
+    source: source,
+    modelFailure: modelFailure,
+    dishes: dishes ?? this.dishes,
+    photoEstimate: photoEstimate,
+  );
 
   @override
   List<Object?> get props => [
     rows,
-    dish,
+    dishes,
+    photoEstimate,
     parseErrors,
     usesImperialUnits,
     source,

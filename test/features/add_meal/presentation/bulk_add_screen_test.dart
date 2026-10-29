@@ -1377,33 +1377,38 @@ void main() {
     }) => EstimatedIngredient(
       name: name,
       grams: grams,
-      kcal: kcal,
-      proteinG: kcal / 20,
-      carbsG: kcal / 10,
-      fatG: kcal / 40,
+      per100g: Per100g(
+        kcal: kcal * 100 / grams,
+        proteinG: kcal / 20 * 100 / grams,
+        carbsG: kcal / 10 * 100 / grams,
+        fatG: kcal / 40 * 100 / grams,
+      ),
       source: source,
     );
     final dishReading = MealTextParseResult(
       items: const [],
       errors: const [],
-      estimate: PhotoRecipeEstimate(
-        dish: 'Katsu chicken wrap',
-        portionG: 210,
-        servings: 1,
-        ingredients: [
-          part('Tortillas, flour', 70, 210, source: IngredientSource.db),
-          part('Chicken, breaded, fried', 120, 300),
-          part('Lettuce, raw', 20, 3, source: IngredientSource.db),
+      estimate: PhotoMealEstimate(
+        dishes: [
+          PhotoRecipeEstimate(
+            dish: 'Katsu chicken wrap',
+            servings: 1,
+            ingredients: [
+              part('Tortillas, flour', 70, 210, source: IngredientSource.db),
+              part('Chicken, breaded, fried', 120, 300),
+              part('Lettuce, raw', 20, 3, source: IngredientSource.db),
+            ],
+            confidence: EstimateConfidence.medium,
+            assumptions: const ['Fried in vegetable oil'],
+            aiOnly: const EstimateTotals(
+              grams: 210,
+              kcal: 513,
+              proteinG: 25,
+              carbsG: 50,
+              fatG: 13,
+            ),
+          ),
         ],
-        confidence: EstimateConfidence.medium,
-        assumptions: const ['Fried in vegetable oil'],
-        aiOnly: const EstimateTotals(
-          grams: 210,
-          kcal: 513,
-          proteinG: 25,
-          carbsG: 50,
-          fatG: 13,
-        ),
       ),
     );
 
@@ -1516,6 +1521,100 @@ void main() {
       expect(find.text(l10n.bulkAddSubmitLabel(0)), findsOneWidget);
       expect(_mealDetailBloc.writes, isEmpty);
       expect(recipes.saved, isEmpty);
+    });
+
+    group('several dishes on one plate', () {
+      PhotoRecipeEstimate dish(String name, List<EstimatedIngredient> parts) =>
+          PhotoRecipeEstimate(
+            dish: name,
+            servings: 1,
+            ingredients: parts,
+            confidence: EstimateConfidence.medium,
+            assumptions: const [],
+            aiOnly: PhotoRecipeEstimate.sumOf(parts),
+          );
+      final plate = MealTextParseResult(
+        items: const [],
+        errors: const [],
+        estimate: PhotoMealEstimate(
+          dishes: [
+            dish('Idli', [
+              part('Rice, cooked', 110, 143, source: IngredientSource.db),
+              part('Urad dal, cooked', 48, 50),
+            ]),
+            dish('Sambar', [
+              part('Water', 140, 0, source: IngredientSource.db),
+              part('Pigeon peas, cooked', 60, 73),
+            ]),
+            dish('Pad Thai', [
+              part('Rice noodles, cooked', 220, 238),
+              part('Chicken breast, cooked', 80, 132),
+            ]),
+          ],
+        ),
+      );
+
+      testWidgets('each dish is its own header, closed until opened', (
+        tester,
+      ) async {
+        await showDish(tester, plate);
+        final l10n = await S.delegate.load(const Locale('en'));
+
+        expect(find.text('Idli'), findsOneWidget);
+        expect(find.text('Sambar'), findsOneWidget);
+        expect(find.text('Pad Thai'), findsOneWidget);
+        expect(find.text('Rice noodles, cooked'), findsNothing);
+        // Three dishes, three items.
+        expect(find.text(l10n.bulkAddSubmitLabel(3)), findsOneWidget);
+
+        await tester.tap(find.text('Pad Thai'));
+        await tester.pumpAndSettle();
+        expect(find.text('Rice noodles, cooked'), findsOneWidget);
+        expect(find.text('Urad dal, cooked'), findsNothing);
+      });
+
+      testWidgets('each dish is logged and remembered as its own recipe', (
+        tester,
+      ) async {
+        final (_, recipes) = await showDish(tester, plate);
+        final l10n = await S.delegate.load(const Locale('en'));
+
+        await tester.tap(find.text(l10n.bulkAddSubmitLabel(3)));
+        await tester.pumpAndSettle();
+
+        expect(_mealDetailBloc.writes.map((w) => w.mealName), [
+          'Idli',
+          'Sambar',
+          'Pad Thai',
+        ]);
+        expect(_mealDetailBloc.writes.map((w) => double.parse(w.amount)), [
+          158,
+          200,
+          300,
+        ]);
+        expect(recipes.saved.values.map((r) => r.name).toSet(), {
+          'Idli',
+          'Sambar',
+          'Pad Thai',
+        });
+      });
+
+      testWidgets('skipping one dish logs the others', (tester) async {
+        final (_, recipes) = await showDish(tester, plate);
+        final l10n = await S.delegate.load(const Locale('en'));
+
+        // The second dish's skip button.
+        await tester.tap(find.text(l10n.bulkAddSkipLabel).at(1));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text(l10n.bulkAddSubmitLabel(2)));
+        await tester.pumpAndSettle();
+
+        expect(_mealDetailBloc.writes.map((w) => w.mealName), [
+          'Idli',
+          'Pad Thai',
+        ]);
+        expect(recipes.saved, hasLength(2));
+      });
     });
   });
 

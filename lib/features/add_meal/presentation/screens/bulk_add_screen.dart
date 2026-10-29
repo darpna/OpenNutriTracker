@@ -617,23 +617,29 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
 
     // The list is the labelled surface, not each child — row identifiers
     // would churn every time the row count changes.
-    final dish = state.dish;
     final entries = <Widget>[
-      // One row for the dish, then its components when it is open. The
-      // components are the leading rows, so they keep their indexes.
-      if (dish != null) _buildDishRow(context, state, dish),
-      if (dish != null && dish.expanded)
-        for (var i = 0; i < dish.componentCount; i++)
-          Padding(
-            padding: const EdgeInsetsDirectional.only(start: 16),
-            child: _buildRow(context, state, i),
-          ),
-      for (var i = dish?.componentCount ?? 0; i < state.rows.length; i++)
+      // One row per dish, then its components when it is open. The
+      // components are the leading rows, dish by dish, so they keep their
+      // indexes.
+      for (var d = 0; d < state.dishes.length; d++) ...[
+        _buildDishRow(context, state, d),
+        if (state.dishes[d].expanded)
+          for (
+            var i = state.dishStart(d);
+            i < state.dishStart(d) + state.dishes[d].componentCount;
+            i++
+          )
+            Padding(
+              padding: const EdgeInsetsDirectional.only(start: 16),
+              child: _buildRow(context, state, i),
+            ),
+      ],
+      for (var i = state.dishComponentCount; i < state.rows.length; i++)
         _buildRow(context, state, i),
       if (state.parseErrors.isNotEmpty)
         _buildParseErrors(context, state.parseErrors),
       // MacroFactor's footer: every number here is an estimate.
-      if (dish?.estimate != null)
+      if (state.dishes.any((d) => d.estimate != null))
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
           child: Text(
@@ -1124,20 +1130,17 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
   /// total weight and energy of the components that will be logged, and a
   /// chevron that opens them. The numbers are sums over the components below,
   /// so editing one there moves them here.
-  Widget _buildDishRow(
-    BuildContext context,
-    BulkAddLoadedState state,
-    BulkAddDish dish,
-  ) {
+  Widget _buildDishRow(BuildContext context, BulkAddLoadedState state, int d) {
     final s = S.of(context);
     final theme = Theme.of(context);
-    final loggable = state.dishRows.any((row) => row.willBeLogged);
-    final grams = state.dishWeightG;
-    final kcal = state.dishKcal;
+    final dish = state.dishes[d];
+    final loggable = state.dishRows(d).any((row) => row.willBeLogged);
+    final grams = state.dishWeightG(d);
+    final kcal = state.dishKcal(d);
     final weight = state.usesImperialUnits
         ? '${UnitCalc.gToOz(grams).round()} ${s.ozUnit}'
         : '${grams.round()} ${s.gramUnit}';
-    final skipLabel = state.dishRows.any((row) => !row.skipped)
+    final skipLabel = state.dishRows(d).any((row) => !row.skipped)
         ? s.bulkAddSkipLabel
         : s.bulkAddIncludeLabel;
 
@@ -1151,7 +1154,7 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               InkWell(
-                onTap: () => _bloc.add(const ToggleDishExpandedEvent()),
+                onTap: () => _bloc.add(ToggleDishExpandedEvent(d)),
                 child: Row(
                   children: [
                     Expanded(
@@ -1202,9 +1205,9 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
                   child: Text(
                     _macrosText(
                           context,
-                          state.dishProteinG,
-                          state.dishCarbsG,
-                          state.dishFatG,
+                          state.dishProteinG(d),
+                          state.dishCarbsG(d),
+                          state.dishFatG(d),
                         ) ??
                         '',
                     style: theme.textTheme.bodySmall,
@@ -1214,7 +1217,7 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
               Align(
                 alignment: AlignmentDirectional.centerEnd,
                 child: TextButton(
-                  onPressed: () => _bloc.add(const ToggleDishSkippedEvent()),
+                  onPressed: () => _bloc.add(ToggleDishSkippedEvent(d)),
                   child: Text(skipLabel),
                 ),
               ),
@@ -1840,7 +1843,7 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
     );
   }
 
-  /// Logs the dish as one recipe, and remembers it as one.
+  /// Logs a dish as one recipe, and remembers it as one.
   ///
   /// Every component is stored in grams (the amount the plate was confirmed
   /// at), so the recipe re-reads the same weights if it is edited later. The
@@ -1965,19 +1968,19 @@ class _BulkAddScreenState extends State<BulkAddScreen> {
       // with a read-modify-write, so overlapping writes lose updates and
       // the day silently under-counts.
       //
-      // The dish first: its components are the leading rows, and the diary
-      // reads in the order the screen did.
-      final dish = state.dish;
-      final dishWrites = [
-        for (final write in writes)
-          if (dish != null && write.index < dish.componentCount) write,
-      ];
-      if (dish != null && dishWrites.isNotEmpty) {
-        await _logDish(dish, dishWrites);
+      // The dishes first, each as its own recipe: their components are the
+      // leading rows, and the diary reads in the order the screen did.
+      for (var d = 0; d < state.dishes.length; d++) {
+        final dishWrites = [
+          for (final write in writes)
+            if (state.dishOfRow(write.index) == d) write,
+        ];
+        if (dishWrites.isEmpty) continue;
+        await _logDish(state.dishes[d], dishWrites);
         if (!mounted) return;
       }
       for (final write in writes) {
-        if (dish != null && write.index < dish.componentCount) continue;
+        if (state.dishOfRow(write.index) != null) continue;
         await mealDetailBloc.addIntake(
           context,
           // The suffix is a display device; the stored vocabulary stays
