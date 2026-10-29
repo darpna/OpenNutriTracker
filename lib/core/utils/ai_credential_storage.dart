@@ -287,6 +287,14 @@ class AiCredentialStorage {
   /// What a setup-time probe found this destination could do (#735).
   static const _probeTag = 'AiProbeTag';
 
+  /// The optional fallback: an OpenAI-compatible address, its model and its
+  /// key, asked once when the selected provider times out, rate-limits or
+  /// fails on its side. Not a slot of any [AiProvider]: it is used whichever
+  /// one is selected, and switching provider leaves it alone.
+  static const _fallbackEndpointTag = 'AiFallbackEndpointTag';
+  static const _fallbackModelTag = 'AiFallbackModelTag';
+  static const _fallbackKeyTag = 'AiFallbackKeyTag';
+
   static String _slotTag(AiProvider provider) =>
       '$_legacyApiKeyTag.${provider.name}';
 
@@ -1078,7 +1086,85 @@ class AiCredentialStorage {
     await _storage.delete(key: _providerTag);
     await _storage.delete(key: _enabledTag);
     await _storage.delete(key: _termsAcceptedTag);
+    await _deleteFallback();
   });
+
+  /// The fallback as a request can address it — always
+  /// [AiProvider.ownServer], the OpenAI-compatible client at an address — or
+  /// null when none is configured.
+  ///
+  /// Not gated on the on/off switch here: the fallback only ever runs after
+  /// [readSelection] answered, which is where the switch is checked.
+  Future<AiSelection?> readFallbackSelection() async {
+    final endpoint = await _readNonEmpty(_fallbackEndpointTag);
+    final model = await _readNonEmpty(_fallbackModelTag);
+    if (endpoint == null || model == null) return null;
+    if (resolveEndpoint(endpoint) == null) return null;
+    return AiSelection(
+      provider: AiProvider.ownServer,
+      apiKey: await _readNonEmpty(_fallbackKeyTag),
+      endpoint: endpoint,
+      modelId: model,
+    );
+  }
+
+  /// The fallback's address and model, and whether a key is stored, for the
+  /// settings dialog. The key itself is never read back for display.
+  Future<({String? endpoint, String? model, bool hasKey})>
+  readFallbackSummary() async => (
+    endpoint: await _readNonEmpty(_fallbackEndpointTag),
+    model: await _readNonEmpty(_fallbackModelTag),
+    hasKey: await _readNonEmpty(_fallbackKeyTag) != null,
+  );
+
+  /// Stores the fallback, address and model as one act, and reports whether
+  /// anything changed. [endpoint] is completed to the chat route as the
+  /// primary's is ([resolveEndpoint]); a pair that cannot be used is refused
+  /// rather than half-written. A null [apiKey] keeps the stored key, a blank
+  /// one forgets it.
+  Future<bool> writeFallbackConfiguration({
+    required String endpoint,
+    required String model,
+    String? apiKey,
+  }) async {
+    final resolved = resolveEndpoint(endpoint);
+    final trimmedModel = model.trim();
+    if (resolved == null || trimmedModel.isEmpty) return false;
+    return _probeConfigurationLock.synchronized(() async {
+      var changed = false;
+      Future<void> put(String tag, String value) async {
+        if (await _readNonEmpty(tag) == value) return;
+        await _storage.write(key: tag, value: value);
+        changed = true;
+      }
+
+      await put(_fallbackEndpointTag, resolved.toString());
+      await put(_fallbackModelTag, trimmedModel);
+      final key = apiKey?.trim();
+      if (key != null && key.isNotEmpty) {
+        await put(_fallbackKeyTag, key);
+      } else if (key != null && await _readNonEmpty(_fallbackKeyTag) != null) {
+        await _storage.delete(key: _fallbackKeyTag);
+        changed = true;
+      }
+      return changed;
+    });
+  }
+
+  /// Forgets the fallback: address, model and key.
+  Future<void> clearFallback() =>
+      _probeConfigurationLock.synchronized(_deleteFallback);
+
+  Future<void> _deleteFallback() async {
+    await _storage.delete(key: _fallbackEndpointTag);
+    await _storage.delete(key: _fallbackModelTag);
+    await _storage.delete(key: _fallbackKeyTag);
+  }
+
+  Future<String?> _readNonEmpty(String tag) async {
+    final value = await _storage.read(key: tag);
+    return (value == null || value.trim().isEmpty) ? null : value;
+  }
 
   /// The legacy tag is the Anthropic slot under an older name, so it is
   /// retired only when Anthropic's own slot is written or cleared. Deleting

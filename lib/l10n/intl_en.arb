@@ -1472,5 +1472,11 @@
   "customPortionOwnLabel": "Your serving",
   "customPortionDeleteTitle": "Delete serving?",
   "customPortionDeleteBody": "\"{label}\" will no longer be offered for this food. Entries you already logged keep their amounts.",
-  "@customPortionDeleteBody": {"placeholders": {"label": {"type": "String"}}}
+  "@customPortionDeleteBody": {"placeholders": {"label": {"type": "String"}}},
+  "aiAssistFallbackLabel": "Fallback (optional)",
+  "aiAssistFallbackDescription": "An OpenAI-compatible server asked once when the provider above times out, is rate limited or has a server error. A photo is sent there too when it is used.",
+  "aiAssistFallbackEndpointLabel": "Fallback address",
+  "aiAssistFallbackModelLabel": "Fallback model",
+  "aiAssistFallbackKeyLabel": "Fallback API key",
+  "aiAssistFallbackRemoveLabel": "Remove fallback"
 }

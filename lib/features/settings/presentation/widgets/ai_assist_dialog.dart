@@ -119,6 +119,26 @@ class _AiAssistDialogState extends State<AiAssistDialog> {
   final _modelController = TextEditingController();
   final _scrollController = ScrollController();
 
+  /// The optional fallback provider, asked once when the selected one times
+  /// out, rate-limits or fails on its side. Independent of the provider
+  /// radios: it is read once, and kept across a provider switch.
+  final _fallbackEndpointController = TextEditingController();
+  final _fallbackModelController = TextEditingController();
+  final _fallbackKeyController = TextEditingController();
+  bool _fallbackStored = false;
+  bool _fallbackHasKey = false;
+
+  /// What the fields were loaded with, so OK over an untouched fallback
+  /// writes nothing and asks nothing.
+  String _fallbackLoadedEndpoint = '';
+  String _fallbackLoadedModel = '';
+
+  /// Closed until asked for, or until there is a fallback to show: most
+  /// people never set one, and the dialog is already taller than a phone.
+  bool _fallbackOpen = false;
+  String? _fallbackEndpointError;
+  String? _fallbackModelError;
+
   /// Watched so that finishing with the address is a moment the app can act
   /// on. See [_endpointCommitted] for why that moment and no other.
   final _endpointFocus = FocusNode();
@@ -248,7 +268,22 @@ class _AiAssistDialogState extends State<AiAssistDialog> {
     // own LAN does not get to quietly break that from a screen they may have
     // opened to change the theme. #738.
     _load();
+    _loadFallback();
     _endpointFocus.addListener(_onEndpointFocusChanged);
+  }
+
+  Future<void> _loadFallback() async {
+    final fallback = await widget.storage.readFallbackSummary();
+    if (!mounted) return;
+    setState(() {
+      _fallbackStored = fallback.endpoint != null && fallback.model != null;
+      _fallbackOpen = _fallbackOpen || _fallbackStored;
+      _fallbackHasKey = fallback.hasKey;
+      _fallbackLoadedEndpoint = fallback.endpoint ?? '';
+      _fallbackLoadedModel = fallback.model ?? '';
+      _fallbackEndpointController.text = _fallbackLoadedEndpoint;
+      _fallbackModelController.text = _fallbackLoadedModel;
+    });
   }
 
   /// The second half of [_revealRefusal]. OK pressed with the keyboard down
@@ -293,6 +328,9 @@ class _AiAssistDialogState extends State<AiAssistDialog> {
     _endpointController.dispose();
     _modelController.dispose();
     _scrollController.dispose();
+    _fallbackEndpointController.dispose();
+    _fallbackModelController.dispose();
+    _fallbackKeyController.dispose();
     // Removed before the node goes, or tearing the dialog down unfocuses the
     // field and the listener answers by calling setState on a dead State.
     _endpointFocus.removeListener(_onEndpointFocusChanged);
@@ -681,6 +719,37 @@ class _AiAssistDialogState extends State<AiAssistDialog> {
     final provider = _provider;
     var changed = _changed;
 
+    // The fallback is checked first and written last, so a refusal of either
+    // address leaves the device as it found it.
+    final fallbackEndpoint = _fallbackEndpointController.text.trim();
+    final fallbackModel = _fallbackModelController.text.trim();
+    final fallbackKey = _fallbackKeyController.text.trim();
+    final fallbackTyped =
+        fallbackKey.isNotEmpty ||
+        ((fallbackEndpoint.isNotEmpty || fallbackModel.isNotEmpty) &&
+            (fallbackEndpoint != _fallbackLoadedEndpoint ||
+                fallbackModel != _fallbackLoadedModel));
+    if (fallbackTyped) {
+      final resolved = fallbackEndpoint.isEmpty
+          ? null
+          : AiCredentialStorage.resolveEndpoint(fallbackEndpoint);
+      final endpointError = resolved == null
+          ? s.aiAssistEndpointInvalidLabel
+          : _refusedBeforeItLeaves(resolved)
+          ? s.aiAssistEndpointPublicPlaintextLabel
+          : null;
+      final modelError = fallbackModel.isEmpty
+          ? s.aiAssistModelRequiredLabel
+          : null;
+      if (endpointError != null || modelError != null) {
+        setState(() {
+          _fallbackEndpointError = endpointError;
+          _fallbackModelError = modelError;
+        });
+        return;
+      }
+    }
+
     if (provider == AiProvider.ownServer) {
       // The address is this provider's credential, and the model is part of
       // what "configured" means for it (#738) — so both are saved here, and
@@ -775,9 +844,143 @@ class _AiAssistDialogState extends State<AiAssistDialog> {
       changed = true;
     }
 
+    if (fallbackTyped) {
+      // A second destination for the photograph, so it is agreed to like the
+      // first; asking again is free once the agreement is on file.
+      if (!await _agreedBeforeAnythingIsStored(provider)) return;
+      if (await widget.storage.writeFallbackConfiguration(
+        endpoint: fallbackEndpoint,
+        model: fallbackModel,
+        apiKey: fallbackKey.isEmpty ? null : fallbackKey,
+      )) {
+        changed = true;
+      }
+    }
+
     if (!mounted) return;
     Navigator.of(context).pop(changed);
   }
+
+  Future<void> _removeFallback() async {
+    await widget.storage.clearFallback();
+    if (!mounted) return;
+    setState(() {
+      _fallbackStored = false;
+      _fallbackHasKey = false;
+      _fallbackLoadedEndpoint = '';
+      _fallbackLoadedModel = '';
+      _fallbackEndpointController.clear();
+      _fallbackModelController.clear();
+      _fallbackKeyController.clear();
+      _fallbackEndpointError = null;
+      _fallbackModelError = null;
+      _changed = true;
+    });
+  }
+
+  /// The optional second provider. Below the model, because it is a step
+  /// after choosing the first, and above the disclosure, which it extends:
+  /// the photo goes there too when it is used.
+  Widget _buildFallbackSection(S s, ThemeData theme) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Semantics(
+        identifier: 'ai-assist-fallback-toggle',
+        child: InkWell(
+          onTap: () => setState(() => _fallbackOpen = !_fallbackOpen),
+          child: Row(
+            children: [
+              Expanded(child: _label(theme, s.aiAssistFallbackLabel)),
+              Icon(
+                _fallbackOpen
+                    ? Icons.expand_less_rounded
+                    : Icons.expand_more_rounded,
+              ),
+            ],
+          ),
+        ),
+      ),
+      if (_fallbackOpen) ..._fallbackFields(s, theme),
+    ],
+  );
+
+  List<Widget> _fallbackFields(S s, ThemeData theme) => [
+    Text(
+      s.aiAssistFallbackDescription,
+      style: theme.textTheme.bodySmall?.copyWith(
+        color: theme.colorScheme.onSurfaceVariant,
+      ),
+    ),
+    const SizedBox(height: 8),
+    Semantics(
+      identifier: 'ai-assist-fallback-endpoint-field',
+      child: TextField(
+        controller: _fallbackEndpointController,
+        keyboardType: TextInputType.url,
+        autocorrect: false,
+        decoration: InputDecoration(
+          labelText: s.aiAssistFallbackEndpointLabel,
+          // A hint, never a value: nothing is prefilled, so nothing is sent
+          // anywhere the user did not type.
+          hintText: 'https://api.groq.com/openai/v1',
+          errorText: _fallbackEndpointError,
+          border: const OutlineInputBorder(),
+        ),
+        onChanged: (_) {
+          if (_fallbackEndpointError != null) {
+            setState(() => _fallbackEndpointError = null);
+          }
+        },
+      ),
+    ),
+    const SizedBox(height: 8),
+    Semantics(
+      identifier: 'ai-assist-fallback-model-field',
+      child: TextField(
+        controller: _fallbackModelController,
+        autocorrect: false,
+        decoration: InputDecoration(
+          labelText: s.aiAssistFallbackModelLabel,
+          hintText: 'qwen/qwen3.8-27b',
+          errorText: _fallbackModelError,
+          border: const OutlineInputBorder(),
+        ),
+        onChanged: (_) {
+          if (_fallbackModelError != null) {
+            setState(() => _fallbackModelError = null);
+          }
+        },
+      ),
+    ),
+    const SizedBox(height: 8),
+    Semantics(
+      identifier: 'ai-assist-fallback-key-field',
+      child: TextField(
+        controller: _fallbackKeyController,
+        autocorrect: false,
+        enableSuggestions: false,
+        obscureText: true,
+        decoration: InputDecoration(
+          labelText: s.aiAssistFallbackKeyLabel,
+          // A stored key is never shown, only said to be there.
+          hintText: _fallbackHasKey
+              ? '${s.aiAssistKeySavedLabel}  '
+                    '${AiCredentialStorage.maskedPlaceholder}'
+              : null,
+          border: const OutlineInputBorder(),
+        ),
+      ),
+    ),
+    if (_fallbackStored)
+      Semantics(
+        identifier: 'ai-assist-fallback-remove',
+        child: TextButton.icon(
+          onPressed: _removeFallback,
+          icon: const Icon(Icons.delete_outline_rounded),
+          label: Text(s.aiAssistFallbackRemoveLabel),
+        ),
+      ),
+  ];
 
   /// Brings a refused field into view and puts the cursor in it, once the
   /// error text has been laid out. #1364: the dialog is taller than a phone,
@@ -993,7 +1196,10 @@ class _AiAssistDialogState extends State<AiAssistDialog> {
                             labelText: s.aiAssistEndpointFieldLabel,
                             // A base address, which the store completes to
                             // the chat route the runtimes actually answer on.
-                            hintText: 'http://192.168.1.5:11434',
+                            // Google's OpenAI-compatible base, which this fork
+                            // runs on. A hint only: nothing is prefilled.
+                            hintText:
+                                'https://generativelanguage.googleapis.com/v1beta/openai',
                             errorText: _endpointError,
                             border: const OutlineInputBorder(),
                           ),
@@ -1124,6 +1330,8 @@ class _AiAssistDialogState extends State<AiAssistDialog> {
                       const SizedBox(height: 16),
                       _buildProbeSection(s, theme),
                     ],
+                    const SizedBox(height: 16),
+                    _buildFallbackSection(s, theme),
                     const SizedBox(height: 16),
                     // Provider paragraph first — it names the destination,
                     // which is the fact that changes — then the sentences that
@@ -1472,7 +1680,7 @@ class _AiAssistDialogState extends State<AiAssistDialog> {
               autocorrect: false,
               decoration: InputDecoration(
                 labelText: s.aiAssistModelFieldLabel,
-                hintText: 'gemma3:4b',
+                hintText: 'gemini-3.5-flash',
                 errorText: _modelError,
                 border: const OutlineInputBorder(),
               ),

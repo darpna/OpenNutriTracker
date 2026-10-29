@@ -3666,4 +3666,124 @@ void main() {
       );
     });
   });
+
+  group('the fallback provider', () {
+    Future<void> openFallback(WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1080, 4000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(_app(storage));
+      await tester.pumpAndSettle();
+      await tester.tap(find.bySemanticsIdentifier('ai-assist-fallback-toggle'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('is closed until asked for, and prefills nothing', (
+      tester,
+    ) async {
+      tester.view.physicalSize = const Size(1080, 4000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(_app(storage));
+      await tester.pumpAndSettle();
+
+      expect(find.text(l10nEn.aiAssistFallbackLabel), findsOneWidget);
+      expect(
+        find.bySemanticsIdentifier('ai-assist-fallback-endpoint-field'),
+        findsNothing,
+      );
+
+      await tester.tap(find.bySemanticsIdentifier('ai-assist-fallback-toggle'));
+      await tester.pumpAndSettle();
+      final fields = tester
+          .widgetList<TextField>(find.byType(TextField))
+          .map((f) => f.controller!.text);
+      expect(fields.every((text) => text.isEmpty), isTrue);
+      // The defaults are hints, never values.
+      String? hint(String id) => tester
+          .widget<TextField>(
+            find.descendant(
+              of: find.bySemanticsIdentifier(id),
+              matching: find.byType(TextField),
+            ),
+          )
+          .decoration!
+          .hintText;
+      expect(
+        hint('ai-assist-fallback-endpoint-field'),
+        'https://api.groq.com/openai/v1',
+      );
+      expect(hint('ai-assist-fallback-model-field'), 'qwen/qwen3.8-27b');
+    });
+
+    testWidgets('OK stores its address, model and key', (tester) async {
+      await openFallback(tester);
+
+      await tester.enterText(
+        find.bySemanticsIdentifier('ai-assist-fallback-endpoint-field'),
+        'https://api.groq.com/openai/v1',
+      );
+      await tester.enterText(
+        find.bySemanticsIdentifier('ai-assist-fallback-model-field'),
+        'qwen/qwen3.8-27b',
+      );
+      await tester.enterText(
+        find.bySemanticsIdentifier('ai-assist-fallback-key-field'),
+        'gsk_test',
+      );
+      await tester.tap(find.text(l10nEn.dialogOKLabel));
+      await tester.pumpAndSettle();
+
+      final fallback = (await storage.readFallbackSelection())!;
+      expect(
+        fallback.endpoint,
+        'https://api.groq.com/openai/v1/chat/completions',
+      );
+      expect(fallback.modelId, 'qwen/qwen3.8-27b');
+      expect(fallback.apiKey, 'gsk_test');
+    });
+
+    testWidgets('an address with no model is refused, and nothing stored', (
+      tester,
+    ) async {
+      await openFallback(tester);
+
+      await tester.enterText(
+        find.bySemanticsIdentifier('ai-assist-fallback-endpoint-field'),
+        'https://api.groq.com/openai/v1',
+      );
+      await tester.tap(find.text(l10nEn.dialogOKLabel));
+      await tester.pumpAndSettle();
+
+      expect(find.text(l10nEn.aiAssistModelRequiredLabel), findsOneWidget);
+      expect(await storage.readFallbackSelection(), isNull);
+      expect(find.byType(AiAssistDialog), findsOneWidget);
+    });
+
+    testWidgets('a stored one opens shown, and Remove forgets it', (
+      tester,
+    ) async {
+      await storage.writeFallbackConfiguration(
+        endpoint: 'https://api.groq.com/openai/v1',
+        model: 'qwen/qwen3.8-27b',
+        apiKey: 'gsk_test',
+      );
+      tester.view.physicalSize = const Size(1080, 4000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(_app(storage));
+      await tester.pumpAndSettle();
+
+      final texts = tester
+          .widgetList<TextField>(find.byType(TextField))
+          .map((f) => f.controller!.text)
+          .toList();
+      expect(texts, contains('qwen/qwen3.8-27b'));
+      expect(texts, isNot(contains('gsk_test')), reason: 'never shown');
+
+      await tester.tap(find.text(l10nEn.aiAssistFallbackRemoveLabel));
+      await tester.pumpAndSettle();
+      expect(await storage.readFallbackSelection(), isNull);
+    });
+  });
 }
