@@ -132,6 +132,12 @@ class OpenAiCompatibleMealItemsApi implements MealItemsApi, MealPhotoToolApi {
   /// the behaviour that was deliberate for them.
   final MealInterpreterFailure timeoutFailure;
 
+  /// Whether to apply Google's compatibility handling (see
+  /// `gemini_compat.dart`). Null decides by the address, which is what the app
+  /// does; a value is for a test or probe that needs to send the request
+  /// without it.
+  final bool? geminiCompat;
+
   OpenAiCompatibleMealItemsApi(
     this._client,
     this._apiKey, {
@@ -142,6 +148,7 @@ class OpenAiCompatibleMealItemsApi implements MealItemsApi, MealPhotoToolApi {
     this.failureFor = openRouterFailureFor,
     this.timeout = defaultTimeout,
     this.timeoutFailure = MealInterpreterFailure.transient,
+    this.geminiCompat,
   });
 
   /// The OpenRouter configuration, named so call sites read as intent rather
@@ -190,7 +197,7 @@ class OpenAiCompatibleMealItemsApi implements MealItemsApi, MealPhotoToolApi {
     // Google's endpoint takes an OpenAPI subset of the schema and spends
     // `max_tokens` on thinking too; see gemini_compat.dart. Nobody else is
     // affected.
-    final gemini = isGeminiEndpoint(endpoint);
+    final gemini = geminiCompat ?? isGeminiEndpoint(endpoint);
     final body = jsonEncode({
       'model': model,
       'max_tokens': spec.maxTokens + (gemini ? geminiThinkingAllowance : 0),

@@ -156,6 +156,38 @@ void main() {
     });
   });
 
+  group('the override', () {
+    test('false sends Google the request every other server gets', () async {
+      final client = _Client(
+        _toolReply(mealItemsToolName, {
+          'items': [
+            {'query': 'egg'},
+          ],
+        }),
+      );
+      final api = OpenAiCompatibleMealItemsApi(
+        client,
+        () => 'k',
+        model: 'm',
+        endpoint: _gemini,
+        toolChoice: ToolChoiceMode.anyTool,
+        geminiCompat: false,
+      );
+
+      await api.requestItems(
+        content: const MealTextContent('egg'),
+        system: 's',
+      );
+
+      expect(client.sent!.containsKey('reasoning_effort'), isFalse);
+      expect(client.sent!['max_tokens'], mealItemsToolSpec.maxTokens);
+      expect(
+        (client.sent!['tools'] as List).single['function']['parameters'],
+        mealItemsToolSchema,
+      );
+    });
+  });
+
   group('every other destination is unchanged', () {
     for (final endpoint in [
       _ollama,

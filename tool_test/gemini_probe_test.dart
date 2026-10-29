@@ -14,6 +14,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:opennutritracker/core/utils/ai_credential_storage.dart';
 import 'package:opennutritracker/features/add_meal/data/meal_items_api_factory.dart';
+import 'package:opennutritracker/features/add_meal/data/openai_compatible_meal_items_api.dart';
+import 'package:opennutritracker/features/add_meal/domain/meal_items_api.dart';
 import 'package:opennutritracker/features/add_meal/data/model_meal_photo_interpreter.dart';
 import 'package:opennutritracker/features/add_meal/data/model_meal_text_interpreter.dart';
 import 'package:opennutritracker/features/add_meal/domain/meal_photo_interpreter.dart';
@@ -22,13 +24,12 @@ import 'package:opennutritracker/features/add_meal/util/meal_text_parser.dart';
 
 /// The base address as a user would type it, which the app completes to the
 /// chat route.
-final _typedAddress = _variant == 'baseline'
-    ? 'https://generativelanguage.googleapis.com./v1beta/openai/'
-    : 'https://generativelanguage.googleapis.com/v1beta/openai/';
+const _typedAddress =
+    'https://generativelanguage.googleapis.com/v1beta/openai/';
 
-/// `baseline` sends what the app sent before the Gemini fix: the same host
-/// written with a trailing dot, which is the same server but is not recognised
-/// as Google's, so no compatibility handling applies.
+/// `baseline` sends what the app sent before the Gemini fix (the client with
+/// Google's compatibility handling switched off); `fixed` sends what it sends
+/// now.
 final _variant = Platform.environment['PROBE_VARIANT'] ?? 'fixed';
 
 final _key = Platform.environment['GEMINI_API_KEY'] ?? '';
@@ -142,29 +143,78 @@ void main() {
     mediaType: 'image/jpeg',
   );
 
+  /// What the app builds for this selection, or — for `baseline` — the same
+  /// client without Google's compatibility handling, which is exactly what the
+  /// app sent before the fix.
+  MealItemsApi buildApi(http.Client http, AiSelection selection) {
+    if (_variant != 'baseline') {
+      return mealItemsApiFor(http, selection, timeout: aiEndpointProbeTimeout);
+    }
+    return OpenAiCompatibleMealItemsApi(
+      http,
+      () => selection.apiKey ?? '',
+      model: selection.modelId!,
+      endpoint: Uri.parse(selection.endpoint!),
+      toolChoice: ToolChoiceMode.anyTool,
+      timeout: aiEndpointProbeTimeout,
+      timeoutFailure: MealInterpreterFailure.timeout,
+      geminiCompat: false,
+    );
+  }
+
+  /// Google answers 503 "high demand" and stalls on busy models, which the
+  /// probe reads as `unknown`. A diagnostic retries those; a verdict of
+  /// `failed` is never retried, because that is the answer being looked for.
+  Future<AiCapability> verdictOf(
+    String label,
+    Future<AiCapability> Function() probe,
+  ) async {
+    var verdict = await probe();
+    for (
+      var attempt = 2;
+      attempt <= 3 && verdict == AiCapability.unknown;
+      attempt++
+    ) {
+      // ignore: avoid_print
+      print('=== $label verdict: unknown; trying again ($attempt of 3)');
+      await Future<void>.delayed(const Duration(seconds: 15));
+      verdict = await probe();
+    }
+    // ignore: avoid_print
+    print('=== $label verdict: ${verdict.name}');
+    return verdict;
+  }
+
   test(
     'text: the setup check, then the detail',
     () async {
       if (_mode == 'photo') return;
-      final prober = AiEndpointProber(client, sampleImage: (_) async => null);
-      final verdict = await prober.probeText(selection);
-      // ignore: avoid_print
-      print('=== text verdict: ${verdict.name}');
+      final prober = AiEndpointProber(
+        client,
+        sampleImage: (_) async => null,
+        apiFor: buildApi,
+      );
+      final verdict = await verdictOf(
+        'text',
+        () => prober.probeText(selection),
+      );
 
-      final api = mealItemsApiFor(client, selection);
       try {
         _describe(
           'text interpreter',
-          await ModelMealTextInterpreter(api).interpret(aiProbeMealLine),
+          await ModelMealTextInterpreter(
+            buildApi(client, selection),
+          ).interpret(aiProbeMealLine),
         );
       } on MealInterpreterException catch (e) {
         // ignore: avoid_print
         print('=== text interpreter threw: $e');
       }
-      expect(verdict, AiCapability.passed);
+      // The baseline is the bug being reproduced; it is reported, not asserted.
+      if (_variant != 'baseline') expect(verdict, AiCapability.passed);
     },
     skip: skip,
-    timeout: const Timeout(Duration(minutes: 4)),
+    timeout: const Timeout(Duration(minutes: 8)),
   );
 
   test(
@@ -172,24 +222,30 @@ void main() {
     () async {
       if (_mode == 'text') return;
       final photo = await sample();
-      final prober = AiEndpointProber(client, sampleImage: (_) async => photo);
-      final verdict = await prober.probePhoto(selection);
-      // ignore: avoid_print
-      print('=== photo verdict: ${verdict.name}');
+      final prober = AiEndpointProber(
+        client,
+        sampleImage: (_) async => photo,
+        apiFor: buildApi,
+      );
+      final verdict = await verdictOf(
+        'photo',
+        () => prober.probePhoto(selection),
+      );
 
-      final api = mealItemsApiFor(client, selection);
       try {
         _describe(
           'photo interpreter',
-          await ModelMealPhotoInterpreter(api).interpret(photo),
+          await ModelMealPhotoInterpreter(
+            buildApi(client, selection),
+          ).interpret(photo),
         );
       } on MealInterpreterException catch (e) {
         // ignore: avoid_print
         print('=== photo interpreter threw: $e');
       }
-      expect(verdict, AiCapability.passed);
+      if (_variant != 'baseline') expect(verdict, AiCapability.passed);
     },
     skip: skip,
-    timeout: const Timeout(Duration(minutes: 4)),
+    timeout: const Timeout(Duration(minutes: 8)),
   );
 }
