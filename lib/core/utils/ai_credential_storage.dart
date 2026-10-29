@@ -495,6 +495,11 @@ class AiCredentialStorage {
     if (path.endsWith('/v1')) {
       return uri.replace(path: '$path/chat/completions');
     }
+    // Google's compatibility base, `…/v1beta/openai`, which its own docs give
+    // as the base URL. The route under it is the same one.
+    if (path.endsWith('/v1beta/openai')) {
+      return uri.replace(path: '$path/chat/completions');
+    }
     return uri.replace(path: path);
   }
 
