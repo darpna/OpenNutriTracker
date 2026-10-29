@@ -279,7 +279,8 @@ bool _offersSettings(BulkAddPhotoError error) => switch (error) {
   BulkAddPhotoError.camera ||
   BulkAddPhotoError.gallery ||
   BulkAddPhotoError.unreadable ||
-  BulkAddPhotoError.billing => false,
+  BulkAddPhotoError.billing ||
+  BulkAddPhotoError.providerError => false,
 };
 
 /// Puts the screen in front of the photo failure [error], without a picker
@@ -1823,6 +1824,65 @@ void main() {
     final l10n = await S.delegate.load(const Locale('en'));
     expect(find.text(l10n.bulkAddPhotoNoFoodLabel), findsOneWidget);
     expect(find.text(l10n.bulkAddNothingToLogLabel), findsNothing);
+  });
+
+  testWidgets('a provider error shows its status and message under the sentence', (
+    tester,
+  ) async {
+    final bloc = await _registerWithPhotoReading(
+      const MealPhotoFailed(
+        MealPhotoFailure.providerError,
+        statusCode: 400,
+        providerMessage: 'API key not valid. Please pass a valid API key.',
+      ),
+    );
+    await tester.pumpWidget(_app());
+    tester.state<NavigatorState>(find.byType(Navigator)).pushNamed('/bulk');
+    await tester.pumpAndSettle();
+
+    bloc.add(
+      ReadMealPhotoEvent(
+        photo: MealPhoto(
+          bytes: Uint8List.fromList([1, 2, 3]),
+          mediaType: 'image/webp',
+        ),
+        usesImperialUnits: false,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final l10n = await S.delegate.load(const Locale('en'));
+    expect(find.text(l10n.bulkAddPhotoProviderErrorLabel), findsOneWidget);
+    expect(
+      find.text('HTTP 400: API key not valid. Please pass a valid API key.'),
+      findsOneWidget,
+    );
+    expect(find.text(l10n.bulkAddPhotoUnreadableLabel), findsNothing);
+    expect(find.text(l10n.bulkAddPhotoFailedLabel), findsNothing);
+  });
+
+  testWidgets('a dropped connection shows no provider detail', (tester) async {
+    final bloc = await _registerWithPhotoReading(
+      const MealPhotoFailed(MealPhotoFailure.transient),
+    );
+    await tester.pumpWidget(_app());
+    tester.state<NavigatorState>(find.byType(Navigator)).pushNamed('/bulk');
+    await tester.pumpAndSettle();
+
+    bloc.add(
+      ReadMealPhotoEvent(
+        photo: MealPhoto(
+          bytes: Uint8List.fromList([1, 2, 3]),
+          mediaType: 'image/webp',
+        ),
+        usesImperialUnits: false,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final l10n = await S.delegate.load(const Locale('en'));
+    expect(find.text(l10n.bulkAddPhotoFailedLabel), findsOneWidget);
+    expect(find.textContaining('HTTP'), findsNothing);
   });
 
   testWidgets(

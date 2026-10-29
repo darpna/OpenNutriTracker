@@ -248,17 +248,18 @@ void main() {
       expect((reading as MealPhotoFailed).failure, MealPhotoFailure.billing);
     });
 
-    test('a refused image is not offered as retryable', () async {
+    test('a refusal with no HTTP answer behind it is still a refused image', () async {
       // Found by running a corpus of real photographs: a JPEG carrying Adobe
-      // APP14 markers is refused with a 400 every single time, while the same
-      // picture re-encoded goes through. "Check your connection and try
-      // again" is advice that can never work here; "try another photo" can.
+      // APP14 markers is refused every single time, while the same picture
+      // re-encoded goes through. "Check your connection and try again" is
+      // advice that can never work here; "try another photo" can. Only a
+      // refusal that carries no provider status stays this kind: an HTTP 400
+      // is as likely a wrong key as a bad photo, and is a provider error.
       final s = subject(
         apiKey: 'k',
         throws: const MealInterpreterException(
           'bad image',
           failure: MealInterpreterFailure.rejected,
-          statusCode: 400,
         ),
       );
 
@@ -268,6 +269,54 @@ void main() {
         (reading as MealPhotoFailed).failure,
         MealPhotoFailure.rejectedImage,
       );
+    });
+
+    test('an HTTP 400 keeps its status and the provider message', () async {
+      // Found 30 Oct 2026: a whole replay ran on a bad Gemini key and every
+      // photo came back "unreadable", because the 400 was read as a refused
+      // image and the provider's own words were dropped.
+      final s = subject(
+        apiKey: 'k',
+        throws: const MealInterpreterException(
+          'provider returned 400',
+          failure: MealInterpreterFailure.rejected,
+          statusCode: 400,
+          providerMessage: 'API key not valid. Please pass a valid API key.',
+        ),
+      );
+
+      final reading = await s.useCase.read(_photo) as MealPhotoFailed;
+
+      expect(reading.failure, MealPhotoFailure.providerError);
+      expect(reading.statusCode, 400);
+      expect(
+        reading.providerMessage,
+        'API key not valid. Please pass a valid API key.',
+      );
+    });
+
+    test('a rate limit or server error is a provider error with its status', () async {
+      for (final status in [429, 503]) {
+        final s = subject(
+          apiKey: 'k',
+          throws: MealInterpreterException(
+            'provider returned $status',
+            failure: MealInterpreterFailure.transient,
+            statusCode: status,
+            providerMessage: 'try later',
+          ),
+        );
+
+        final reading = await s.useCase.read(_photo) as MealPhotoFailed;
+
+        expect(
+          reading.failure,
+          MealPhotoFailure.providerError,
+          reason: '$status',
+        );
+        expect(reading.statusCode, status);
+        expect(reading.providerMessage, 'try later');
+      }
     });
 
     test('a server error is not reported as an auth failure', () async {
@@ -280,9 +329,28 @@ void main() {
         ),
       );
 
-      final reading = await s.useCase.read(_photo);
+      final reading = await s.useCase.read(_photo) as MealPhotoFailed;
 
-      expect((reading as MealPhotoFailed).failure, MealPhotoFailure.transient);
+      expect(reading.failure, isNot(MealPhotoFailure.auth));
+      expect(reading.statusCode, 503);
+    });
+
+    test('an auth failure keeps its status and message too', () async {
+      final s = subject(
+        apiKey: 'k',
+        throws: const MealInterpreterException(
+          'nope',
+          failure: MealInterpreterFailure.auth,
+          statusCode: 401,
+          providerMessage: 'Invalid key',
+        ),
+      );
+
+      final reading = await s.useCase.read(_photo) as MealPhotoFailed;
+
+      expect(reading.failure, MealPhotoFailure.auth);
+      expect(reading.statusCode, 401);
+      expect(reading.providerMessage, 'Invalid key');
     });
 
     test(
@@ -500,9 +568,11 @@ void main() {
         throws: const MealInterpreterException('request failed'),
       );
 
-      final reading = await s.useCase.read(_photo);
+      final reading = await s.useCase.read(_photo) as MealPhotoFailed;
 
-      expect((reading as MealPhotoFailed).failure, MealPhotoFailure.transient);
+      expect(reading.failure, MealPhotoFailure.transient);
+      expect(reading.statusCode, isNull);
+      expect(reading.providerMessage, isNull);
     });
 
     test(

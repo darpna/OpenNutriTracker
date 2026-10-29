@@ -171,6 +171,33 @@ void main() {
       expect(json['ai_only'], isNull);
     });
 
+    test('a provider error keeps its status and message, as its own kind', () {
+      const failed = ReplayResult(
+        id: 'abc',
+        caption: null,
+        error: 'providerError',
+        httpStatus: 400,
+        providerError: 'API key not valid. Please pass a valid API key.',
+      );
+      final json = failed.toJson();
+
+      expect(json['error'], 'providerError');
+      expect(json['error'], isNot('unreadable'));
+      expect(json['http_status'], 400);
+      expect(
+        json['provider_error'],
+        'API key not valid. Please pass a valid API key.',
+      );
+    });
+
+    test('a failure with no HTTP answer has null status and message', () {
+      const failed = ReplayResult(id: 'abc', caption: null, error: 'transient');
+      final json = failed.toJson();
+
+      expect(json['http_status'], isNull);
+      expect(json['provider_error'], isNull);
+    });
+
     test('an estimate reports grounded and ai-only totals side by side', () {
       const result = ReplayResult(
         id: 'abc',
