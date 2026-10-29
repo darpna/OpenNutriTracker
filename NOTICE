@@ -1,0 +1,7 @@
+OpenNutriTracker bundles data from third parties:
+
+USDA FoodData Central (Foundation Foods and SR Legacy)
+  U.S. Department of Agriculture, Agricultural Research Service.
+  https://fdc.nal.usda.gov
+  Public domain (CC0 1.0). Used as assets/nutrition/usda_generic.json.gz, built
+  by tool/usda/build_usda_generic.dart.
