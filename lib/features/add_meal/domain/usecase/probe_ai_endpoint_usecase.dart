@@ -165,10 +165,10 @@ class AiEndpointProber {
       final result = await ModelMealPhotoInterpreter(
         _apiFor(selection),
       ).interpret(photo, localeCode: localeCode);
-      // A dish counts by its components: the sliced loaf the probe sends may
-      // come back as one dish with parts, which is still a usable answer.
+      // A recipe counts by its ingredients: the sliced loaf the probe sends
+      // comes back as a dish with parts, which is a usable answer.
       return _verdictFor(
-        result.items.length + (result.dish?.components.length ?? 0),
+        result.items.length + (result.estimate?.ingredients.length ?? 0),
         'photo',
       );
     } on MealInterpreterException catch (e) {

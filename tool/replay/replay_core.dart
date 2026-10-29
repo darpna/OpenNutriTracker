@@ -11,6 +11,7 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
+import 'package:opennutritracker/features/add_meal/domain/photo_estimate.dart';
 import 'package:opennutritracker/features/add_meal/presentation/bloc/bulk_add_bloc.dart';
 
 /// First ten characters of the SHA-1 of the file's bytes. Stable for the same
@@ -110,6 +111,16 @@ class ReplayResult {
   /// provider.
   final String? error;
 
+  /// The recipe estimate's portion in grams, and the model's own confidence.
+  final double? portionG;
+  final String? confidence;
+
+  /// Totals with the bundled table's numbers where it knew the ingredient
+  /// (what the app shows), and the same ingredients with the model's numbers
+  /// only. The pair is what shows whether the table helps.
+  final EstimateTotals? grounded;
+  final EstimateTotals? aiOnly;
+
   const ReplayResult({
     required this.id,
     required this.caption,
@@ -117,6 +128,10 @@ class ReplayResult {
     this.items = const [],
     this.unmatched = const [],
     this.error,
+    this.portionG,
+    this.confidence,
+    this.grounded,
+    this.aiOnly,
   });
 
   double get totalKcal =>
@@ -130,8 +145,22 @@ class ReplayResult {
     'unmatched': unmatched,
     'total_kcal': _round(totalKcal),
     'error': error,
+    'portion_g': _round(portionG),
+    'confidence': confidence,
+    'grounded': _totals(grounded),
+    'ai_only': _totals(aiOnly),
   };
 }
+
+Map<String, Object?>? _totals(EstimateTotals? t) => t == null
+    ? null
+    : {
+        'grams': _round(t.grams),
+        'kcal': _round(t.kcal),
+        'protein_g': _round(t.proteinG),
+        'carbs_g': _round(t.carbsG),
+        'fat_g': _round(t.fatG),
+      };
 
 double? _round(double? value) =>
     value == null ? null : double.parse(value.toStringAsFixed(1));
@@ -170,12 +199,17 @@ ReplayResult resultFromLoaded({
       ),
     );
   }
+  final estimate = state.dish?.estimate;
   return ReplayResult(
     id: id,
     caption: caption,
     dish: state.dish?.name,
     items: items,
     unmatched: unmatched,
+    portionG: estimate?.portionG,
+    confidence: estimate?.confidence.name,
+    grounded: estimate?.totals,
+    aiOnly: estimate?.aiOnly,
   );
 }
 

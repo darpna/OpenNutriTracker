@@ -24,7 +24,7 @@ import 'package:opennutritracker/core/domain/entity/intake_type_entity.dart';
 import 'package:opennutritracker/core/domain/entity/recipe_entity.dart';
 import 'package:opennutritracker/core/domain/usecase/compute_recipe_nutrition_usecase.dart';
 import 'package:opennutritracker/core/domain/usecase/save_recipe_usecase.dart';
-import 'package:opennutritracker/features/add_meal/domain/ai_per100_estimate.dart';
+import 'package:opennutritracker/features/add_meal/domain/photo_estimate.dart';
 import 'package:opennutritracker/features/add_meal/domain/usecase/save_photo_dish_usecase.dart';
 import 'package:opennutritracker/features/add_meal/util/meal_photo_encoder.dart';
 import 'package:opennutritracker/features/add_meal/util/meal_photo_preparer.dart';
@@ -1368,30 +1368,41 @@ void main() {
   });
 
   group('a photo read as a dish', () {
-    const macros = AiPer100Estimate(
-      kcal: 250,
-      proteinG: 12,
-      carbsG: 20,
-      fatG: 13,
-    );
-    ParsedMealItem part(String query, double grams) => ParsedMealItem(
-      query: query,
-      quantity: grams,
-      unit: 'g',
-      estimated: true,
-      estimatedGrams: grams,
-      aiPer100: macros,
+    EstimatedIngredient part(
+      String name,
+      double grams,
+      double kcal, {
+      IngredientSource source = IngredientSource.ai,
+    }) => EstimatedIngredient(
+      name: name,
+      grams: grams,
+      kcal: kcal,
+      proteinG: kcal / 20,
+      carbsG: kcal / 10,
+      fatG: kcal / 40,
+      source: source,
     );
     final dishReading = MealTextParseResult(
       items: const [],
       errors: const [],
-      dish: ParsedMealDish(
-        name: 'Katsu chicken wrap',
-        components: [
-          part('flour tortilla', 70),
-          part('breaded fried chicken', 120),
-          part('lettuce', 20),
+      estimate: PhotoRecipeEstimate(
+        dish: 'Katsu chicken wrap',
+        portionG: 210,
+        servings: 1,
+        ingredients: [
+          part('Tortillas, flour', 70, 210, source: IngredientSource.db),
+          part('Chicken, breaded, fried', 120, 300),
+          part('Lettuce, raw', 20, 3, source: IngredientSource.db),
         ],
+        confidence: EstimateConfidence.medium,
+        assumptions: const ['Fried in vegetable oil'],
+        aiOnly: const EstimateTotals(
+          grams: 210,
+          kcal: 513,
+          proteinG: 25,
+          carbsG: 50,
+          fatG: 13,
+        ),
       ),
     );
 
@@ -1430,61 +1441,48 @@ void main() {
       return (bloc, recipes);
     }
 
-    testWidgets('is one row that opens onto its components', (tester) async {
-      await showDish(tester, dishReading);
-      final l10n = await S.delegate.load(const Locale('en'));
-
-      // Closed: the dish and nothing under it.
-      expect(find.text('Katsu chicken wrap'), findsOneWidget);
-      expect(find.text(l10n.bulkAddDishComponentsLabel(3)), findsOneWidget);
-      expect(find.text('Flour tortilla'), findsNothing);
-      expect(find.text(l10n.bulkAddSubmitLabel(1)), findsOneWidget);
-
-      await tester.tap(find.text('Katsu chicken wrap'));
-      await tester.pumpAndSettle();
-
-      expect(find.text('Flour tortilla'), findsOneWidget);
-      expect(find.text('Breaded fried chicken'), findsOneWidget);
-      expect(find.text('Lettuce'), findsOneWidget);
-      // Still one item to log, however many parts are showing.
-      expect(find.text(l10n.bulkAddSubmitLabel(1)), findsOneWidget);
-    });
-
-    testWidgets('says "estimated" and "AI estimate" instead of "not stated"', (
+    testWidgets('opens onto its ingredients, with totals on the dish', (
       tester,
     ) async {
       await showDish(tester, dishReading);
       final l10n = await S.delegate.load(const Locale('en'));
 
-      await tester.tap(find.text('Katsu chicken wrap'));
-      await tester.pumpAndSettle();
-
-      // Three parts, each a model's guess at both food and amount, plus the
-      // dish row's own marker.
-      expect(find.text(l10n.bulkAddAiEstimateLabel), findsNWidgets(3));
-      expect(find.text(l10n.bulkAddEstimatedLabel), findsNWidgets(4));
-      expect(find.text(l10n.bulkAddDefaultAmountLabel), findsNothing);
-      // Pre-filled, and editable.
+      expect(find.text('Katsu chicken wrap'), findsOneWidget);
+      expect(find.text('Tortillas, flour'), findsOneWidget);
+      expect(find.text('Chicken, breaded, fried'), findsOneWidget);
+      expect(find.text('Lettuce, raw'), findsOneWidget);
+      // Grams are the default, pre-filled and editable.
       final amounts = tester
           .widgetList<TextField>(find.byType(TextField))
           .map((field) => field.controller?.text)
           .toList();
       expect(amounts, containsAll(['70', '120', '20']));
+      // Still one item to log, however many ingredients are showing.
+      expect(find.text(l10n.bulkAddSubmitLabel(1)), findsOneWidget);
+      // Dish header carries the sum of the ingredients' macros.
+      expect(find.text(l10n.bulkAddMacrosLine('26', '51', '13')), findsWidgets);
     });
 
-    testWidgets('a part the user edits stops being "estimated"', (
+    testWidgets('marks only the model-made ingredients with a sparkle', (
       tester,
     ) async {
       await showDish(tester, dishReading);
       final l10n = await S.delegate.load(const Locale('en'));
-      await tester.tap(find.text('Katsu chicken wrap'));
-      await tester.pumpAndSettle();
 
-      await tester.enterText(find.widgetWithText(TextField, '120'), '150');
-      await tester.pumpAndSettle();
+      expect(find.byTooltip(l10n.bulkAddAiEstimateLabel), findsOneWidget);
+    });
 
-      expect(find.text(l10n.bulkAddEstimatedLabel), findsNWidgets(3));
-      expect(find.text(l10n.bulkAddAiEstimateLabel), findsNWidgets(3));
+    testWidgets('shows confidence, assumptions and the footer', (tester) async {
+      await showDish(tester, dishReading);
+      final l10n = await S.delegate.load(const Locale('en'));
+
+      expect(find.text(l10n.bulkAddEstimateFooter), findsOneWidget);
+      expect(find.text('• Fried in vegetable oil'), findsNothing);
+      await tester.tap(
+        find.textContaining(l10n.bulkAddConfidenceMedium, findRichText: true),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('• Fried in vegetable oil'), findsOneWidget);
     });
 
     testWidgets('is logged as one recipe, and remembered', (tester) async {
@@ -1511,7 +1509,7 @@ void main() {
       final (_, recipes) = await showDish(tester, dishReading);
       final l10n = await S.delegate.load(const Locale('en'));
 
-      await tester.tap(find.text(l10n.bulkAddSkipLabel));
+      await tester.tap(find.text(l10n.bulkAddSkipLabel).first);
       await tester.pumpAndSettle();
 
       expect(find.text(l10n.bulkAddSubmitLabel(0)), findsOneWidget);
@@ -1752,7 +1750,8 @@ void main() {
       expect(
         File(pickedPath).existsSync(),
         isFalse,
-        reason: 'the encoder removes the picker\'s copy whether or not it is used',
+        reason:
+            'the encoder removes the picker\'s copy whether or not it is used',
       );
       expect(find.text(l10nEn.bulkAddPhotoAnalyseLabel), findsNothing);
     });

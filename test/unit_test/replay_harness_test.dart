@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:opennutritracker/core/utils/ai_credential_storage.dart';
 import 'package:opennutritracker/features/add_meal/domain/ai_per100_estimate.dart';
+import 'package:opennutritracker/features/add_meal/domain/photo_estimate.dart';
 import 'package:opennutritracker/features/add_meal/domain/entity/meal_entity.dart';
 import 'package:opennutritracker/features/add_meal/domain/entity/meal_nutriments_entity.dart';
 import 'package:opennutritracker/features/add_meal/domain/meal_photo_interpreter.dart';
@@ -137,6 +138,10 @@ void main() {
         'unmatched',
         'total_kcal',
         'error',
+        'portion_g',
+        'confidence',
+        'grounded',
+        'ai_only',
       ]);
       final item = (json['items'] as List).first as Map;
       expect(item.keys, [
@@ -162,6 +167,38 @@ void main() {
       expect(json['items'], isEmpty);
       expect(json['total_kcal'], 0.0);
       expect(json['error'], 'transient');
+      expect(json['grounded'], isNull);
+      expect(json['ai_only'], isNull);
+    });
+
+    test('an estimate reports grounded and ai-only totals side by side', () {
+      const result = ReplayResult(
+        id: 'abc',
+        caption: null,
+        dish: 'Dal',
+        portionG: 300.04,
+        confidence: 'medium',
+        grounded: EstimateTotals(
+          grams: 300,
+          kcal: 410.26,
+          proteinG: 20,
+          carbsG: 50,
+          fatG: 12,
+        ),
+        aiOnly: EstimateTotals(
+          grams: 300,
+          kcal: 380,
+          proteinG: 19,
+          carbsG: 48,
+          fatG: 11,
+        ),
+      );
+      final json = result.toJson();
+
+      expect(json['portion_g'], 300.0);
+      expect(json['confidence'], 'medium');
+      expect((json['grounded'] as Map)['kcal'], 410.3);
+      expect((json['ai_only'] as Map)['kcal'], 380.0);
     });
 
     test('the file names the model and the photos, and nothing else', () {

@@ -125,6 +125,10 @@ flutter:
   uses-material-design: true
 
   assets:
+    # Generic food table for photo estimates: USDA FoodData Central
+    # (Foundation Foods + SR Legacy, public domain). Built by
+    # tool/usda/build_usda_generic.dart; see NOTICE.
+    - assets/nutrition/usda_generic.json.gz
     - assets/icon/ont_logo_square.svg
     - assets/icon/ont_splash_rings.svg
     - assets/icon/ont_splash_spoon.svg

@@ -1,6 +1,7 @@
 import 'package:opennutritracker/features/add_meal/domain/ai_per100_estimate.dart';
 import 'package:opennutritracker/features/add_meal/domain/entity/meal_entity.dart';
 import 'package:opennutritracker/features/add_meal/domain/entity/meal_nutriments_entity.dart';
+import 'package:opennutritracker/features/add_meal/domain/photo_estimate.dart';
 
 /// Every food built from a model's own macros carries this prefix in its
 /// code. A prefix rather than a field because [MealEntity] is rebuilt by half
@@ -34,6 +35,37 @@ MealEntity aiEstimateMeal(String query, AiPer100Estimate estimate) {
       carbohydrates100: estimate.carbsG,
       fat100: estimate.fatG,
       proteins100: estimate.proteinG,
+      sugars100: null,
+      saturatedFat100: null,
+      fiber100: null,
+    ),
+    source: MealSourceEntity.custom,
+  );
+}
+
+/// The food an ingredient of a photo estimate stands for: weight-based, with
+/// per-100 g values that give the ingredient's numbers at its grams.
+///
+/// An ingredient whose numbers are the model's is marked like any AI estimate;
+/// one grounded in the generic table is an ordinary custom food.
+MealEntity ingredientMeal(EstimatedIngredient ingredient) {
+  final per100 = 100 / ingredient.grams;
+  final ai = ingredient.source == IngredientSource.ai;
+  return MealEntity(
+    code:
+        '${ai ? aiEstimateCodePrefix : 'usda:'}${ingredient.name.toLowerCase()}',
+    name: ingredient.name,
+    url: null,
+    mealQuantity: '100',
+    mealUnit: 'g',
+    servingQuantity: null,
+    servingUnit: null,
+    servingSize: null,
+    nutriments: MealNutrimentsEntity(
+      energyKcal100: ingredient.kcal * per100,
+      carbohydrates100: ingredient.carbsG * per100,
+      fat100: ingredient.fatG * per100,
+      proteins100: ingredient.proteinG * per100,
       sugars100: null,
       saturatedFat100: null,
       fiber100: null,

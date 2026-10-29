@@ -1,113 +1,113 @@
 import 'package:opennutritracker/core/utils/food_name_validator.dart';
-import 'package:opennutritracker/features/add_meal/domain/ai_per100_estimate.dart';
 import 'package:opennutritracker/features/add_meal/domain/meal_items_api.dart';
-import 'package:opennutritracker/features/add_meal/util/meal_text_parser.dart';
+import 'package:opennutritracker/features/add_meal/domain/photo_estimate.dart';
 
-const mealPhotoToolName = 'log_meal_photo';
+const mealPhotoToolName = 'log_meal_estimate';
 
 const mealPhotoToolDescription =
-    'Record the dish or foods in the photo, with estimated amounts and '
-    'per-100 g macros.';
+    'Record the dish in the photo as its recipe, with the ingredients, their '
+    'grams and nutrition for this portion.';
 
-/// Heaviest single item a photograph may claim, in grams. Anything above this
-/// is a misread rather than a meal; the amount is dropped, the food kept.
-const mealPhotoMaxItemGrams = 3000.0;
+/// The instructions the photo reading is held to. One prompt for every
+/// provider; the schema below is the shape of the answer.
+const mealPhotoSystemPrompt = '''
+You are a nutrition estimator inside a calorie tracker. You receive 1 to 3 photos of one meal and an optional caption from the user. Work like a dietitian who knows the standard recipe of every dish.
+Steps:
+1. Identify the dish. If the caption names it, trust the caption over the photo. If unsure, pick the most likely dish and say so in assumptions.
+2. Estimate the portion as cooked/served weight in grams (portion_g), using plate size, utensils and other objects as scale. If the caption gives a weight, use it as portion_g.
+3. Recall the standard recipe for this dish. List EVERY ingredient it normally needs, including things you cannot see: cooking oil or ghee, salt, sugar, sauces, tempering spices, water absorbed.
+4. Scale the ingredients so their grams add up to portion_g (within 3%). Use the amounts a home cook would use for this portion.
+5. Give each ingredient a generic, database-style name in USDA FoodData Central style ("Rice, white, cooked", "Oil, peanut", "Raisins, seedless"). No brand names, no free text.
+6. For each ingredient give kcal, protein_g, carbs_g, fat_g for the grams listed, using standard reference values (USDA FoodData Central, per 100 g scaled to grams). Check kcal against 4*protein + 4*carbs + 9*fat and fix any mismatch above 10%.
+7. totals = sum of ingredients. servings = how many standard servings of the dish this portion equals (1.0 unless clearly more or less).
+8. confidence: "high" (dish and portion clear), "medium" (dish clear, portion or hidden ingredients uncertain), "low" (dish itself uncertain). Put every guess that moves the numbers by more than 10% into assumptions.
+Output ONLY valid JSON matching the schema. No prose.''';
 
-/// Most portions of one name a photograph may claim ("2 slices").
-const mealPhotoMaxPortionCount = 24.0;
+/// Most ingredients one reply may list; the schema says the same.
+const mealPhotoMaxIngredients = 20;
 
-/// How many components or items are read from one reply. A runaway list is
-/// cut, not refused.
-const _maxEntries = 20;
+/// Most assumptions kept.
+const mealPhotoMaxAssumptions = 6;
 
-const _componentSchema = {
-  'type': 'object',
-  'properties': {
-    'query': {
-      'type': 'string',
-      'description':
-          'Food name only, no amount, in the user\'s language. Generic '
-          '("fried chicken", "tortilla"), no brand unless legible in the '
-          'photo.',
-    },
-    'grams': {
-      'type': 'number',
-      'description':
-          'Your estimate of how much of this food is on the plate, in grams '
-          '(millilitres for a drink). Always give it.',
-    },
-    'portion': {
-      'type': 'string',
-      'description':
-          'Optional. One English portion word a food database would know — '
-          'slice, piece, cup, tablespoon, small, medium, large. Only together '
-          'with "count".',
-    },
-    'count': {
-      'type': 'number',
-      'description': 'Optional. How many of "portion" are on the plate.',
-    },
-    'per_100g': {
-      'type': 'object',
-      'description':
-          'Your estimate of this food\'s macros per 100 g, as eaten. Always '
-          'give all four.',
-      'properties': {
-        'kcal': {'type': 'number'},
-        'protein_g': {'type': 'number'},
-        'carbs_g': {'type': 'number'},
-        'fat_g': {'type': 'number'},
-      },
-      'required': ['kcal', 'protein_g', 'carbs_g', 'fat_g'],
-      'additionalProperties': false,
-    },
-  },
-  'required': ['query', 'grams', 'per_100g'],
-  'additionalProperties': false,
-};
+/// Heaviest single ingredient believed, in grams. Above it the ingredient is
+/// dropped (a misread, not a meal).
+const mealPhotoMaxIngredientGrams = 3000.0;
+
+const _number = {'type': 'number'};
 
 /// The one schema every provider is held to for a photograph.
 ///
-/// Unlike [mealItemsToolSchema] it carries nutrition fields — `per_100g` — and
-/// that is deliberate and narrow: they feed only the "AI estimate" fallback
-/// for a component the food database cannot match, never a database match
-/// that is good enough (see `ResolveParsedMealsUseCase`). The typed path keeps
-/// the no-nutrition schema.
-///
-/// Like the first schema it is a hint, not a defence: [mealPhotoResultFromJson]
-/// re-checks everything in Dart, and a reply that fails falls back to the
-/// counts-only reading.
+/// Like the other schema it is a hint, not a defence:
+/// [mealPhotoEstimateFromJson] re-checks everything in Dart.
 const mealPhotoToolSchema = {
   'type': 'object',
   'properties': {
-    'dish': {
-      'type': 'object',
-      'description':
-          'Only when the photo is ONE composed dish a person would log as a '
-          'single thing — a wrap, curry, burger, thali item, sandwich. Omit '
-          'for a plate of separate foods.',
-      'properties': {
-        'name': {'type': 'string', 'description': 'The dish\'s name.'},
-        'components': {
-          'type': 'array',
-          'description':
-              'What the dish is made of: tortilla, breaded fried chicken, '
-              'lettuce, mayo. Include sauces and fillings you can reasonably '
-              'infer.',
-          'items': _componentSchema,
+    'dish': {'type': 'string', 'description': 'The dish\'s name.'},
+    'portion_g': {
+      'type': 'number',
+      'description': 'The portion as served, in grams.',
+    },
+    'servings': {
+      'type': 'number',
+      'description': 'Standard servings of the dish in this portion.',
+    },
+    'ingredients': {
+      'type': 'array',
+      'minItems': 1,
+      'maxItems': mealPhotoMaxIngredients,
+      'items': {
+        'type': 'object',
+        'properties': {
+          'name': {
+            'type': 'string',
+            'description':
+                'Generic database-style name, USDA FoodData Central style.',
+          },
+          'grams': _number,
+          'kcal': _number,
+          'protein_g': _number,
+          'carbs_g': _number,
+          'fat_g': _number,
+          'visible': {
+            'type': 'boolean',
+            'description': 'True when the ingredient can be seen in the photo.',
+          },
         },
+        'required': ['name', 'grams', 'kcal', 'protein_g', 'carbs_g', 'fat_g'],
+        'additionalProperties': false,
       },
-      'required': ['name', 'components'],
+    },
+    'totals': {
+      'type': 'object',
+      'properties': {
+        'grams': _number,
+        'kcal': _number,
+        'protein_g': _number,
+        'carbs_g': _number,
+        'fat_g': _number,
+      },
+      'required': ['grams', 'kcal', 'protein_g', 'carbs_g', 'fat_g'],
       'additionalProperties': false,
     },
-    'items': {
+    'confidence': {
+      'type': 'string',
+      'enum': ['high', 'medium', 'low'],
+    },
+    'assumptions': {
       'type': 'array',
-      'description':
-          'Separate foods on the plate that are not part of the dish. Empty '
-          'when there are none.',
-      'items': _componentSchema,
+      'maxItems': mealPhotoMaxAssumptions,
+      'items': {'type': 'string'},
     },
   },
+  'required': [
+    'dish',
+    'portion_g',
+    'servings',
+    'ingredients',
+    'totals',
+    'confidence',
+    'assumptions',
+  ],
   'additionalProperties': false,
 };
 
@@ -115,13 +115,12 @@ const mealPhotoToolSpec = MealToolSpec(
   name: mealPhotoToolName,
   description: mealPhotoToolDescription,
   schema: mealPhotoToolSchema,
-  maxTokens: 2048,
+  maxTokens: 3072,
 );
 
 /// The reply was not the shape the schema asks for. Distinct from
-/// [MealInterpreterException] on purpose: the provider answered fine, the
-/// answer is unusable, and the right response is the counts-only fallback, not
-/// an error shown to the user.
+/// [MealInterpreterException] on purpose: the provider answered fine and the
+/// answer is unusable.
 class MealPhotoReplyException implements Exception {
   final String reason;
 
@@ -131,128 +130,143 @@ class MealPhotoReplyException implements Exception {
   String toString() => 'MealPhotoReplyException($reason)';
 }
 
+/// What a reply claimed, before any of it has been checked against the others:
+/// the ingredients with the model's own numbers, and the portion it stated.
+class RawPhotoEstimate {
+  final String dish;
+  final double? portionG;
+  final double servings;
+  final List<EstimatedIngredient> ingredients;
+  final EstimateConfidence confidence;
+  final List<String> assumptions;
+
+  /// The model's own `totals.kcal`, used only to rescue a reply whose
+  /// ingredients all came back with no energy.
+  final double? claimedKcal;
+
+  const RawPhotoEstimate({
+    required this.dish,
+    required this.portionG,
+    required this.servings,
+    required this.ingredients,
+    required this.confidence,
+    required this.assumptions,
+    required this.claimedKcal,
+  });
+}
+
 /// Reads the photo tool's input strictly.
 ///
-/// **Structure is checked hard, values softly.** A reply with no `dish` and no
-/// `items`, a dish without a name or components, a component that is not an
-/// object or lacks `query` or `per_100g` — all of those throw
-/// [MealPhotoReplyException], because they mean the model did not answer the
-/// question asked. A well-formed component with a nonsense number (zero or
-/// 5 kg of rice, 2000 kcal per 100 g) keeps its food and loses just that
-/// number: the user can see and edit the row, which beats discarding the plate.
-///
-/// Amounts: grams in (0, [mealPhotoMaxItemGrams]]; a portion needs a count in
-/// (0, [mealPhotoMaxPortionCount]]. Both are kept flagged `estimated`.
-MealTextParseResult mealPhotoResultFromJson(Object? input) {
+/// **Structure is checked hard, values softly.** A reply that is not an object,
+/// has no dish name, or has no `ingredients` array, throws
+/// [MealPhotoReplyException]; an empty array is read as "no food". Beyond that a
+/// bad ingredient (no usable name, no grams, absurd grams) is dropped and the
+/// rest kept; only when none survive is the reply refused.
+RawPhotoEstimate mealPhotoEstimateFromJson(Object? input) {
   if (input is! Map) {
     throw const MealPhotoReplyException('tool input is not an object');
   }
-  final hasDish = input.containsKey('dish') && input['dish'] != null;
-  final hasItems = input.containsKey('items');
-  if (!hasDish && !hasItems) {
-    throw const MealPhotoReplyException('neither dish nor items');
+  final rawIngredients = input['ingredients'];
+  if (rawIngredients is! List) {
+    throw const MealPhotoReplyException('no ingredients');
+  }
+  // An empty list is an answer — nothing to eat in this photo — not a failure,
+  // as on the typed path. The caller shows "no food found".
+  if (rawIngredients.isEmpty) {
+    return const RawPhotoEstimate(
+      dish: '',
+      portionG: null,
+      servings: 1.0,
+      ingredients: [],
+      confidence: EstimateConfidence.low,
+      assumptions: [],
+      claimedKcal: null,
+    );
+  }
+  final dish = input['dish'];
+  if (dish is! String || !FoodNameValidator.isValid(dish.trim())) {
+    throw const MealPhotoReplyException('no usable dish name');
   }
 
-  ParsedMealDish? dish;
-  if (hasDish) {
-    final raw = input['dish'];
-    if (raw is! Map) {
-      throw const MealPhotoReplyException('dish is not an object');
-    }
-    final name = raw['name'];
-    if (name is! String || !FoodNameValidator.isValid(name.trim())) {
-      throw const MealPhotoReplyException('dish has no usable name');
-    }
-    final components = _components(raw['components']);
-    if (components.isEmpty) {
-      throw const MealPhotoReplyException('dish has no usable components');
-    }
-    dish = ParsedMealDish(name: name.trim(), components: components);
-  }
-
-  final rawItems = input['items'];
-  final items = hasItems
-      ? _components(rawItems, allowEmpty: true)
-      : const <ParsedMealItem>[];
-
-  return MealTextParseResult(items: items, errors: const [], dish: dish);
-}
-
-List<ParsedMealItem> _components(Object? raw, {bool allowEmpty = false}) {
-  if (raw is! List) {
-    throw const MealPhotoReplyException('components is not an array');
-  }
-  if (raw.isEmpty && !allowEmpty) {
-    throw const MealPhotoReplyException('components is empty');
-  }
-  final parsed = <ParsedMealItem>[];
-  for (final entry in raw.take(_maxEntries)) {
+  final ingredients = <EstimatedIngredient>[];
+  for (final entry in rawIngredients.take(mealPhotoMaxIngredients)) {
     if (entry is! Map) {
-      throw const MealPhotoReplyException('component is not an object');
+      throw const MealPhotoReplyException('ingredient is not an object');
     }
-    final item = _component(entry);
-    if (item != null) parsed.add(item);
+    final ingredient = _ingredient(entry);
+    if (ingredient != null) ingredients.add(ingredient);
   }
-  // Every entry present and none usable is a reply that was not the one asked
-  // for, not "no food": the same distinction `mealItemsFromJson` draws.
-  if (parsed.isEmpty && raw.isNotEmpty) {
-    throw const MealPhotoReplyException('no component survived');
+  if (ingredients.isEmpty) {
+    throw const MealPhotoReplyException('no ingredient survived');
   }
-  return parsed;
+
+  final totals = input['totals'];
+  final rawAssumptions = input['assumptions'];
+  final servings = _positive(input['servings']);
+  return RawPhotoEstimate(
+    dish: dish.trim(),
+    portionG: _positive(input['portion_g']),
+    servings: servings ?? 1.0,
+    ingredients: ingredients,
+    confidence: EstimateConfidence.parse(input['confidence']),
+    assumptions: [
+      if (rawAssumptions is List)
+        for (final a in rawAssumptions)
+          if (a is String && a.trim().isNotEmpty) a.trim(),
+    ].take(mealPhotoMaxAssumptions).toList(),
+    claimedKcal: totals is Map ? _positive(totals['kcal']) : null,
+  );
 }
 
-/// One component, or null when its name is unusable (dropped, not fatal).
-ParsedMealItem? _component(Map<dynamic, dynamic> raw) {
-  final query = raw['query'];
-  if (query is! String) {
-    throw const MealPhotoReplyException('component has no query');
+EstimatedIngredient? _ingredient(Map<dynamic, dynamic> raw) {
+  final name = raw['name'];
+  if (name is! String) {
+    throw const MealPhotoReplyException('ingredient has no name');
   }
-  if (!raw.containsKey('per_100g')) {
-    throw const MealPhotoReplyException('component has no per_100g');
+  final grams = _positive(raw['grams']);
+  final kcal = _nonNegative(raw['kcal']);
+  final protein = _nonNegative(raw['protein_g']);
+  final carbs = _nonNegative(raw['carbs_g']);
+  final fat = _nonNegative(raw['fat_g']);
+  if (grams == null ||
+      kcal == null ||
+      protein == null ||
+      carbs == null ||
+      fat == null) {
+    // A number missing or not a number: this ingredient cannot be trusted, the
+    // others still can.
+    return null;
   }
-  final name = query.trim();
-  if (!FoodNameValidator.isValid(name)) return null;
-
-  final grams = _amount(raw['grams'], max: mealPhotoMaxItemGrams);
-  final count = _amount(raw['count'], max: mealPhotoMaxPortionCount);
-  final rawPortion = raw['portion'];
-  final portion = rawPortion is String && rawPortion.trim().isNotEmpty
-      ? rawPortion.trim()
-      : null;
-  final aiPer100 = AiPer100Estimate.tryParse(raw['per_100g']);
-
-  if (portion != null && count != null) {
-    return ParsedMealItem(
-      query: name,
-      quantity: count,
-      portion: portion,
-      estimated: true,
-      estimatedGrams: grams,
-      aiPer100: aiPer100,
-    );
-  }
-  if (grams != null) {
-    return ParsedMealItem(
-      query: name,
-      quantity: grams,
-      unit: 'g',
-      estimated: true,
-      estimatedGrams: grams,
-      aiPer100: aiPer100,
-    );
-  }
-  return ParsedMealItem(query: name, aiPer100: aiPer100);
+  final trimmed = name.trim();
+  if (!FoodNameValidator.isValid(trimmed)) return null;
+  if (grams > mealPhotoMaxIngredientGrams) return null;
+  final visible = raw['visible'];
+  return EstimatedIngredient(
+    name: trimmed,
+    grams: grams,
+    kcal: kcal,
+    proteinG: protein,
+    carbsG: carbs,
+    fatG: fat,
+    visible: visible is bool ? visible : null,
+  );
 }
 
-/// A positive finite number within [max], or null. Numeric strings are read
-/// the way `mealItemsFromJson` reads them; any other type is not an amount.
-double? _amount(Object? value, {required double max}) {
+double? _number2(Object? value) {
   final number = switch (value) {
     num n => n.toDouble(),
     String s => double.tryParse(s.replaceAll(',', '.')),
     _ => null,
   };
-  if (number == null || !number.isFinite) return null;
-  if (number <= 0 || number > max) return null;
-  return number;
+  return number != null && number.isFinite ? number : null;
+}
+
+double? _positive(Object? value) {
+  final n = _number2(value);
+  return n != null && n > 0 ? n : null;
+}
+
+double? _nonNegative(Object? value) {
+  final n = _number2(value);
+  return n != null && n >= 0 ? n : null;
 }

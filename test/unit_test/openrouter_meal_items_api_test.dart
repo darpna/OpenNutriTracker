@@ -1,14 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:logging/logging.dart';
-import 'package:opennutritracker/features/add_meal/data/model_meal_photo_interpreter.dart';
 import 'package:opennutritracker/features/add_meal/data/openai_compatible_meal_items_api.dart';
 import 'package:opennutritracker/features/add_meal/domain/meal_items_api.dart';
-import 'package:opennutritracker/features/add_meal/domain/meal_photo_interpreter.dart';
 import 'package:opennutritracker/features/add_meal/util/meal_text_parser.dart';
 
 /// Captures the outgoing request and replays a canned reply. Nothing in this
@@ -791,37 +788,6 @@ void main() {
       );
     });
   });
-
-  group('the seam holds', () {
-    test('the photo interpreter runs over this client unchanged', () async {
-      // The counts-only rule is a property of reading photographs, not of a
-      // provider. Adding a destination must not be a way around it.
-      final client = FakeClient(
-        body: toolReply([
-          {'query': 'rice', 'quantity': 200, 'unit': 'g'},
-          {'query': 'eggs', 'quantity': 2},
-        ]),
-      );
-
-      // Over the counts-only reading: this client answers the first tool, and
-      // the estimate reading has its own suite.
-      final result = await ModelMealPhotoInterpreter(
-        _ItemsOnlyApi(apiWith(client)),
-      ).interpret(
-        MealPhoto(
-          bytes: Uint8List.fromList([1, 2, 3, 4]),
-          mediaType: 'image/webp',
-        ),
-      );
-
-      final rice = result.items.firstWhere((i) => i.query == 'rice');
-      expect(rice.quantity, isNull, reason: 'a measured amount is dropped');
-      expect(rice.unit, isNull);
-
-      final eggs = result.items.firstWhere((i) => i.query == 'eggs');
-      expect(eggs.quantity, 2, reason: 'a count survives');
-    });
-  });
 }
 
 /// Stands in for a socket error whose message carries the request URL, which
@@ -829,17 +795,4 @@ void main() {
 class _LeakySocketException implements Exception {
   @override
   String toString() => 'connection failed to openrouter.ai';
-}
-
-/// Hides the photo tool so the interpreter takes the counts-only reading.
-class _ItemsOnlyApi implements MealItemsApi {
-  final MealItemsApi _inner;
-
-  _ItemsOnlyApi(this._inner);
-
-  @override
-  Future<MealTextParseResult> requestItems({
-    required MealContent content,
-    required String system,
-  }) => _inner.requestItems(content: content, system: system);
 }

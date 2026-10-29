@@ -1,0 +1,21 @@
+{
+  "dish": "Dal makhani with rice",
+  "portion_g": 420,
+  "servings": 1.0,
+  "ingredients": [
+    {"name": "Rice, white, cooked", "grams": 180, "kcal": 234, "protein_g": 4.9, "carbs_g": 50.8, "fat_g": 0.5, "visible": true},
+    {"name": "Lentils, black gram, cooked", "grams": 110, "kcal": 128, "protein_g": 9.9, "carbs_g": 21.6, "fat_g": 0.5, "visible": true},
+    {"name": "Kidney beans, cooked", "grams": 40, "kcal": 51, "protein_g": 3.4, "carbs_g": 9.1, "fat_g": 0.2, "visible": true},
+    {"name": "Cream, heavy", "grams": 30, "kcal": 101, "protein_g": 0.6, "carbs_g": 0.8, "fat_g": 10.7, "visible": false},
+    {"name": "Butter, salted", "grams": 15, "kcal": 108, "protein_g": 0.1, "carbs_g": 0, "fat_g": 12.2, "visible": false},
+    {"name": "Tomato puree", "grams": 25, "kcal": 20, "protein_g": 0.8, "carbs_g": 4.5, "fat_g": 0.1, "visible": false},
+    {"name": "Garam masala", "grams": 2, "kcal": 7, "protein_g": 0.3, "carbs_g": 1.2, "fat_g": 0.3, "visible": false},
+    {"name": "Salt, table", "grams": 3, "kcal": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0, "visible": false}
+  ],
+  "totals": {"grams": 405, "kcal": 649, "protein_g": 20.0, "carbs_g": 88.0, "fat_g": 24.5},
+  "confidence": "medium",
+  "assumptions": [
+    "Portion is a typical restaurant serving of dal with about 180 g of rice",
+    "Dal finished with cream and butter, about 45 g together"
+  ]
+}

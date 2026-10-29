@@ -180,7 +180,7 @@ void main() {
         'data:image/webp;base64,AAAA',
       );
       expect((content.last as Map)['type'], 'input_text');
-      expect((content.last as Map)['text'], mealPhotoContentPrompt);
+      expect((content.last as Map)['text'], 'Caption: none');
     });
 
     test('the key is a bearer header and nothing else', () async {
