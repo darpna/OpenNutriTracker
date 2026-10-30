@@ -225,7 +225,7 @@ class OpenAiCompatibleMealItemsApi implements MealItemsApi, MealPhotoToolApi {
             'name': spec.name,
             'description': spec.description,
             'parameters': gemini
-                ? withoutAdditionalProperties(spec.schema)
+                ? geminiSchema(spec.schema)
                 : spec.schema,
             // **No `strict: true`.** It looks like free rigour and is not.
             //
