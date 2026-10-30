@@ -135,7 +135,10 @@ A run of 20 photos takes about seven minutes.
             }
           ]
         }
-      ]
+      ],
+      "primary_error": null,
+      "primary_http_status": null,
+      "primary_provider_error": null
     }
   ]
 }
@@ -172,8 +175,18 @@ A run of 20 photos takes about seven minutes.
 - `run` is which reading of the photo this is (from 1); with `runs` above 1
   each photo appears once per run. `model_used` is the model that answered:
   the primary's, or the fallback's when the primary failed.
+- `primary_error`, `primary_http_status` and `primary_provider_error` are set
+  when the fallback answered: the primary's failure kind, its HTTP status and
+  its error text (as for `provider_error`), so a photo the fallback read still
+  says why the primary did not. All three are null when the primary answered.
 - `dish`, `unmatched`, `portion_g`, `confidence`, `grounded`, `ai_only`, `run`,
-  `model_used` and `dishes` are additions to the minimal shape.
+  `model_used`, `dishes` and the `primary_*` fields are additions to the
+  minimal shape.
+
+The file is rewritten after every photo (into `<REPLAY_OUT>.tmp`, then renamed
+over `REPLAY_OUT`), always in the shape above, so a run that is cancelled or
+times out leaves a complete file with every photo read so far. The workflow
+uploads it whatever the outcome of the replay step.
 
 ## In the private repo
 
