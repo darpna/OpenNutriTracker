@@ -1,3 +1,4 @@
+import 'package:equatable/equatable.dart';
 import 'package:logging/logging.dart';
 import 'package:opennutritracker/core/utils/ai_credential_storage.dart';
 import 'package:opennutritracker/core/utils/ai_model_catalogue.dart';
@@ -19,7 +20,34 @@ sealed class MealPhotoReadResult {
 final class MealPhotoRead extends MealPhotoReadResult {
   final MealTextParseResult result;
 
-  const MealPhotoRead(this.result);
+  /// Why the selected provider failed, when the fallback is what answered.
+  /// Null when the selected provider answered itself.
+  final MealPhotoPrimaryFailure? primaryFailure;
+
+  const MealPhotoRead(this.result, {this.primaryFailure});
+}
+
+/// The selected provider's failure, kept when the fallback answered in its
+/// place, so a read that "worked" still says why the first provider did not.
+/// Diagnostic only: nothing decides anything from it.
+final class MealPhotoPrimaryFailure extends Equatable {
+  final MealPhotoFailure failure;
+
+  /// The provider's HTTP status, when it answered with one.
+  final int? statusCode;
+
+  /// The provider's error text, trimmed and with key-shaped strings masked
+  /// (see `providerErrorMessage`).
+  final String? providerMessage;
+
+  const MealPhotoPrimaryFailure(
+    this.failure, {
+    this.statusCode,
+    this.providerMessage,
+  });
+
+  @override
+  List<Object?> get props => [failure, statusCode, providerMessage];
 }
 
 /// No key stored, or the user has switched the feature off. The screen only
@@ -133,6 +161,7 @@ class ReadMealPhotoUseCase {
           photo,
           localeCode: localeCode,
           caption: caption,
+          primary: _failed(e),
         );
         if (fallen != null) return fallen;
       }
@@ -162,11 +191,13 @@ class ReadMealPhotoUseCase {
 
   /// One more try, on the fallback, or null when there is none or it failed
   /// too — then the selected provider's failure is what the user sees, since
-  /// that is the provider they chose.
+  /// that is the provider they chose. When the fallback answers, [primary]
+  /// rides along on the result so the first failure is not lost.
   Future<MealPhotoReadResult?> _readWithFallback(
     MealPhoto photo, {
     String? localeCode,
     String? caption,
+    required MealPhotoFailed primary,
   }) async {
     final AiSelection? fallback;
     try {
@@ -187,6 +218,11 @@ class ReadMealPhotoUseCase {
       return MealPhotoRead(
         result.withEstimate(
           estimate?.withModel(model).withAssumption('Estimated with $model.'),
+        ),
+        primaryFailure: MealPhotoPrimaryFailure(
+          primary.failure,
+          statusCode: primary.statusCode,
+          providerMessage: primary.providerMessage,
         ),
       );
     } catch (e) {

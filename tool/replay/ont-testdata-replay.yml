@@ -135,7 +135,10 @@ jobs:
           REPLAY_FALLBACK_API_KEY: ${{ secrets[inputs.fallback_key_secret] }}
         run: flutter test tool/replay/replay_test.dart --reporter expanded
 
+      # Also after a failed, cancelled or timed-out replay: the harness
+      # rewrites replay.json after every photo, so it holds what was read.
       - name: Upload replay.json
+        if: ${{ always() && hashFiles('replay.json') != '' }}
         uses: actions/upload-artifact@v7
         with:
           name: replay

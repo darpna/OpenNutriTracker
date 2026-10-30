@@ -148,6 +148,10 @@ void main() {
         'run',
         'model_used',
         'dishes',
+        // Added with the fallback's diagnostics.
+        'primary_error',
+        'primary_http_status',
+        'primary_provider_error',
       ]);
       final item = (json['items'] as List).first as Map;
       expect(item.keys, [
@@ -293,7 +297,7 @@ void main() {
       ],
     );
 
-    Future<ReplayResult> replay() async {
+    Future<ReplayResult> replay({MealPhotoPrimaryFailure? primary}) async {
       final bloc = BulkAddBloc(
         ResolveParsedMealsUseCase(_Search(const {})),
         ReadMealTextUseCase(
@@ -307,6 +311,7 @@ void main() {
               errors: const [],
               estimate: estimate,
             ),
+            primaryFailure: primary,
           ),
         ),
       );
@@ -354,6 +359,29 @@ void main() {
       });
       expect(rice['kcal'], 143.0);
       expect(((dishes.last as Map)['rows'] as List).single['source'], 'cache');
+    });
+
+    test('a fallback answer records why the primary failed', () async {
+      final json = (await replay(
+        primary: const MealPhotoPrimaryFailure(
+          MealPhotoFailure.providerError,
+          statusCode: 503,
+          providerMessage: 'The model is overloaded.',
+        ),
+      )).toJson();
+
+      expect(json['error'], isNull, reason: 'the photo was read');
+      expect(json['primary_error'], 'providerError');
+      expect(json['primary_http_status'], 503);
+      expect(json['primary_provider_error'], 'The model is overloaded.');
+    });
+
+    test('a primary answer has no primary failure', () async {
+      final json = (await replay()).toJson();
+
+      expect(json['primary_error'], isNull);
+      expect(json['primary_http_status'], isNull);
+      expect(json['primary_provider_error'], isNull);
     });
 
     test('the older fields describe the whole plate', () async {
@@ -445,6 +473,36 @@ void main() {
         expect(result.totalKcal, closeTo(78, 1e-9));
       },
     );
+  });
+
+  group('writing the file', () {
+    late Directory dir;
+
+    setUp(() => dir = Directory.systemTemp.createTempSync('replay_out'));
+    tearDown(() => dir.deleteSync(recursive: true));
+
+    test('each write replaces the whole file and leaves nothing beside it', () {
+      final path = '${dir.path}/replay.json';
+      const first = ReplayResult(id: 'a', caption: null, error: 'transient');
+      const second = ReplayResult(id: 'b', caption: null, error: 'auth');
+      String file(List<ReplayResult> results) =>
+          encodeReplay(model: 'm', baseUrl: 'https://x.test', results: results);
+
+      writeAtomically(path, file([first]));
+      final afterOne = jsonDecode(File(path).readAsStringSync()) as Map;
+      expect((afterOne['photos'] as List).map((p) => (p as Map)['id']), ['a']);
+
+      writeAtomically(path, file([first, second]));
+      final afterTwo = jsonDecode(File(path).readAsStringSync()) as Map;
+      expect((afterTwo['photos'] as List).map((p) => (p as Map)['id']), [
+        'a',
+        'b',
+      ]);
+      expect(afterTwo.keys, afterOne.keys, reason: 'the same shape each time');
+      expect(dir.listSync().map((e) => e.uri.pathSegments.last), [
+        'replay.json',
+      ]);
+    });
   });
 
   group('retry-after', () {

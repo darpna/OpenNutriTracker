@@ -260,6 +260,25 @@ void main() {
       const preparer = DartPhotoPreparer();
 
       final results = <ReplayResult>[];
+      // The file is rewritten after every photo, not once at the end, so a run
+      // that is cancelled or times out keeps every result it got.
+      void save() => writeAtomically(
+        outPath,
+        encodeReplay(
+          model: model,
+          baseUrl: baseUrl,
+          results: results,
+          runs: runs,
+          fallbackModel: hasFallback ? fallbackModel : null,
+          fallbackBaseUrl: hasFallback ? fallbackBaseUrl : null,
+        ),
+      );
+      void record(ReplayResult result) {
+        results.add(result);
+        save();
+      }
+
+      save();
       for (var run = 1; run <= runs; run++) {
         for (var i = 0; i < photos.length; i++) {
           final file = photos[i];
@@ -276,7 +295,7 @@ void main() {
           if (photo == null) {
             // ignore: avoid_print
             print('$label could not be encoded');
-            results.add(
+            record(
               ReplayResult(
                 id: id,
                 caption: caption,
@@ -336,20 +355,10 @@ void main() {
                     '${result.totalKcal.round()} kcal'
                     '${result.modelUsed == model ? '' : ' (${result.modelUsed})'}'}',
           );
-          results.add(result);
+          record(result);
         }
       }
 
-      File(outPath).writeAsStringSync(
-        encodeReplay(
-          model: model,
-          baseUrl: baseUrl,
-          results: results,
-          runs: runs,
-          fallbackModel: hasFallback ? fallbackModel : null,
-          fallbackBaseUrl: hasFallback ? fallbackBaseUrl : null,
-        ),
-      );
       // ignore: avoid_print
       print('wrote ${results.length} result(s)');
       // The run is a measurement, not a check: a photo that failed is in the

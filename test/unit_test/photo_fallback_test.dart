@@ -196,6 +196,15 @@ void main() {
           estimate.dishes.single.assumptions,
           contains('Estimated with $_fallbackModel.'),
         );
+        expect(
+          result.primaryFailure,
+          MealPhotoPrimaryFailure(
+            MealPhotoFailure.providerError,
+            statusCode: status,
+            providerMessage: 'The model is overloaded.',
+          ),
+          reason: 'why the primary failed is kept',
+        );
       });
     }
 
@@ -209,6 +218,11 @@ void main() {
 
       expect(subject.hosts, [_google, _groq]);
       expect((result as MealPhotoRead).result.estimate!.model, _fallbackModel);
+      expect(
+        result.primaryFailure,
+        const MealPhotoPrimaryFailure(MealPhotoFailure.transient),
+        reason: 'a timeout has no status or message, only its kind',
+      );
     });
   });
 
@@ -240,6 +254,7 @@ void main() {
       final estimate = (result as MealPhotoRead).result.estimate!;
       expect(estimate.model, _primaryModel);
       expect(estimate.dishes.single.assumptions, isEmpty);
+      expect(result.primaryFailure, isNull);
     });
 
     test('when none is configured: the primary\'s failure stands', () async {

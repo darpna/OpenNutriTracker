@@ -564,15 +564,17 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
             MealPhotoFailure.providerError => BulkAddPhotoError.providerError,
           }, httpStatus: statusCode, providerMessage: providerMessage),
         );
-      case MealPhotoRead(:final result) when result.estimate != null:
+      case MealPhotoRead(:final result, :final primaryFailure)
+          when result.estimate != null:
         // A photograph is read as a recipe: its ingredients already carry their
         // numbers, so nothing is searched for. See [_emitEstimate].
         _emitEstimate(
           result.estimate!,
           emit,
           usesImperialUnits: event.usesImperialUnits,
+          primaryFailure: primaryFailure,
         );
-      case MealPhotoRead(:final result):
+      case MealPhotoRead(:final result, :final primaryFailure):
         // An empty list is an answer, not a failure: the model looked and
         // found no food. It lands on the same "nothing to log" message the
         // text path uses rather than on an error, because nothing went
@@ -583,6 +585,7 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
           attempt: attempt,
           usesImperialUnits: event.usesImperialUnits,
           source: BulkAddReadSource.photo,
+          primaryFailure: primaryFailure,
         );
     }
   }
@@ -609,6 +612,7 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
     PhotoMealEstimate estimate,
     Emitter<BulkAddState> emit, {
     required bool usesImperialUnits,
+    MealPhotoPrimaryFailure? primaryFailure,
   }) {
     final rows = <BulkAddRow>[];
     final dishes = <BulkAddDish>[];
@@ -637,6 +641,7 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
         source: BulkAddReadSource.photo,
         dishes: dishes,
         photoEstimate: estimate,
+        primaryFailure: primaryFailure,
       ),
     );
   }
@@ -676,6 +681,7 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
     required bool usesImperialUnits,
     required BulkAddReadSource source,
     MealTextModelFailure? modelFailure,
+    MealPhotoPrimaryFailure? primaryFailure,
   }) async {
     final dish = parsed.dish;
     if (parsed.items.isEmpty && dish == null) {
@@ -688,6 +694,7 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
           usesImperialUnits: usesImperialUnits,
           source: source,
           modelFailure: modelFailure,
+          primaryFailure: primaryFailure,
         ),
       );
       return;
@@ -715,6 +722,7 @@ class BulkAddBloc extends Bloc<BulkAddEvent, BulkAddState> {
           usesImperialUnits: usesImperialUnits,
           source: source,
           modelFailure: modelFailure,
+          primaryFailure: primaryFailure,
           dishes: [
             if (dish != null)
               BulkAddDish(

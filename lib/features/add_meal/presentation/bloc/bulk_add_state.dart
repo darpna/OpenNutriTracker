@@ -181,6 +181,10 @@ class BulkAddLoadedState extends BulkAddState {
   /// the better reader was not used, rather than withholding anything.
   final MealTextModelFailure? modelFailure;
 
+  /// Why the selected provider failed, when a photo was read by the fallback
+  /// instead. Diagnostic: the replay records it; the screen does not show it.
+  final MealPhotoPrimaryFailure? primaryFailure;
+
   const BulkAddLoadedState({
     required this.rows,
     required this.parseErrors,
@@ -189,6 +193,7 @@ class BulkAddLoadedState extends BulkAddState {
     this.modelFailure,
     this.dishes = const [],
     this.photoEstimate,
+    this.primaryFailure,
   });
 
   Iterable<BulkAddRow> get loggableRows =>
@@ -271,6 +276,7 @@ class BulkAddLoadedState extends BulkAddState {
     modelFailure: modelFailure,
     dishes: dishes ?? this.dishes,
     photoEstimate: photoEstimate,
+    primaryFailure: primaryFailure,
   );
 
   @override
@@ -282,5 +288,6 @@ class BulkAddLoadedState extends BulkAddState {
     usesImperialUnits,
     source,
     modelFailure,
+    primaryFailure,
   ];
 }

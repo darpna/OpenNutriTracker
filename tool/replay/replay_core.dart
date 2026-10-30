@@ -216,6 +216,13 @@ class ReplayResult {
   final int? httpStatus;
   final String? providerError;
 
+  /// When the fallback answered: why the selected provider did not. Its
+  /// failure kind, HTTP status and error text (trimmed, key-shaped strings
+  /// masked). All null when the selected provider answered itself.
+  final String? primaryError;
+  final int? primaryHttpStatus;
+  final String? primaryProviderError;
+
   /// The recipe estimate's portion in grams, and the model's own confidence.
   final double? portionG;
   final String? confidence;
@@ -238,6 +245,9 @@ class ReplayResult {
     this.error,
     this.httpStatus,
     this.providerError,
+    this.primaryError,
+    this.primaryHttpStatus,
+    this.primaryProviderError,
     this.portionG,
     this.confidence,
     this.grounded,
@@ -264,6 +274,9 @@ class ReplayResult {
     'run': run,
     'model_used': modelUsed,
     'dishes': [for (final dish in dishes) dish.toJson()],
+    'primary_error': primaryError,
+    'primary_http_status': primaryHttpStatus,
+    'primary_provider_error': primaryProviderError,
   };
 }
 
@@ -317,6 +330,7 @@ ReplayResult resultFromLoaded({
   }
   final estimate = state.photoEstimate;
   final dishes = estimate?.dishes ?? const <PhotoRecipeEstimate>[];
+  final primary = state.primaryFailure;
   return ReplayResult(
     id: id,
     caption: caption,
@@ -337,6 +351,9 @@ ReplayResult resultFromLoaded({
               .name,
     grounded: estimate?.totals,
     aiOnly: estimate?.aiOnly,
+    primaryError: primary?.failure.name,
+    primaryHttpStatus: primary?.statusCode,
+    primaryProviderError: primary?.providerMessage,
   );
 }
 
@@ -356,6 +373,16 @@ String encodeReplay({
   'fallback_base_url': fallbackBaseUrl,
   'photos': [for (final result in results) result.toJson()],
 });
+
+/// Writes [contents] to [path] so that a reader never finds half a file: into
+/// a sibling temporary file first, then renamed over [path], which replaces it
+/// in one step. The harness rewrites the whole output after every photo, so a
+/// job that is cancelled or times out still leaves every result so far.
+void writeAtomically(String path, String contents) {
+  final temporary = File('$path.tmp');
+  temporary.writeAsStringSync(contents, flush: true);
+  temporary.renameSync(path);
+}
 
 /// Seconds to wait from a `Retry-After` header, or [fallback] when it is
 /// absent or not a plain number of seconds, capped at [cap].

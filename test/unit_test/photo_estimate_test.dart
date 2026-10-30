@@ -64,11 +64,13 @@ PhotoMealEstimate _finalize(
   GenericFoodTable? table,
   FoodNumberCache? cache,
   String? caption,
+  DateTime? now,
 }) => finalizeEstimate(
   mealPhotoEstimateFromJson(reply),
   table: table,
   cache: cache,
   caption: caption,
+  now: now,
 );
 
 /// The one dish of a one-dish reply.
@@ -77,11 +79,13 @@ PhotoRecipeEstimate _single(
   GenericFoodTable? table,
   FoodNumberCache? cache,
   String? caption,
+  DateTime? now,
 }) => _finalize(
   _reply([dish]),
   table: table,
   cache: cache,
   caption: caption,
+  now: now,
 ).dishes.single;
 
 EstimatedIngredient _named(PhotoRecipeEstimate dish, String name) =>
@@ -497,7 +501,7 @@ void main() {
       ],
     );
 
-    test('the first value for a food wins on every later photo', () {
+    test('the first value for a food wins on later photos', () {
       final cache = MemoryFoodNumberCache();
       final first = _single(jaggery(383, 95), cache: cache);
       final second = _single(jaggery(300, 74), cache: cache);
@@ -561,6 +565,98 @@ void main() {
       );
 
       expect(cache.read('x')!.per100g, Per100g.zero);
+    });
+
+    group('expiry', () {
+      final day0 = DateTime(2026, 10, 1);
+
+      test('a model value is used for 30 days, then checked again', () {
+        final cache = MemoryFoodNumberCache();
+        _single(jaggery(383, 95), cache: cache, now: day0);
+
+        final day29 = _single(
+          jaggery(300, 74),
+          cache: cache,
+          now: day0.add(const Duration(days: 29)),
+        ).ingredients.single;
+        expect(day29.source, IngredientSource.cache);
+        expect(day29.per100g.kcal, 383);
+
+        final day31 = _single(
+          jaggery(300, 74),
+          cache: cache,
+          now: day0.add(const Duration(days: 31)),
+        ).ingredients.single;
+        expect(day31.source, IngredientSource.ai);
+        expect(day31.per100g.kcal, 300);
+        expect(cache.read(foodNumberKey('Jaggery'))!.per100g.kcal, 300);
+        expect(
+          cache.read(foodNumberKey('Jaggery'))!.checkedAt,
+          day0.add(const Duration(days: 31)),
+        );
+      });
+
+      test('an entry of unknown age is checked again on next use', () async {
+        final cache = MemoryFoodNumberCache();
+        final key = foodNumberKey('Jaggery');
+        await cache.remember(
+          key,
+          const CachedFoodNumbers(
+            Per100g(kcal: 100, proteinG: 0, carbsG: 25, fatG: 0),
+          ),
+        );
+
+        final jaggeryRow = _single(
+          jaggery(383, 95),
+          cache: cache,
+          now: day0,
+        ).ingredients.single;
+
+        expect(jaggeryRow.source, IngredientSource.ai);
+        expect(jaggeryRow.per100g.kcal, 383);
+        expect(cache.read(key)!.per100g.kcal, 383);
+      });
+
+      test('an expired value still stands in for an ingredient with no '
+          'numbers', () {
+        final cache = MemoryFoodNumberCache();
+        _single(jaggery(383, 95), cache: cache, now: day0);
+
+        final later = _single(
+          _dish(
+            name: 'Tea',
+            ingredients: [
+              {'name': 'jaggery', 'grams': 10},
+            ],
+          ),
+          cache: cache,
+          now: day0.add(const Duration(days: 90)),
+        ).ingredients.single;
+
+        expect(later.source, IngredientSource.cache);
+        expect(later.per100g.kcal, 383);
+      });
+
+      test('a table value never expires', () async {
+        final cache = MemoryFoodNumberCache();
+        await cache.remember(
+          'x',
+          CachedFoodNumbers(Per100g.zero, fromTable: true, checkedAt: day0),
+        );
+        await cache.remember(
+          'x',
+          CachedFoodNumbers(
+            const Per100g(kcal: 100, proteinG: 0, carbsG: 25, fatG: 0),
+            checkedAt: day0.add(const Duration(days: 400)),
+          ),
+        );
+
+        expect(cache.read('x')!.per100g, Per100g.zero);
+        expect(
+          cache.read('x')!.isExpiredAt(day0.add(const Duration(days: 400))),
+          isFalse,
+        );
+      });
     });
 
     test('an ingredient with no numbers takes the cached ones', () {
