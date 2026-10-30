@@ -22,19 +22,31 @@ const geminiReasoningEffort = 'low';
 /// cannot call tools.
 const geminiThinkingAllowance = 8192;
 
-/// [schema] without `additionalProperties`, at every depth.
+/// Keys Google's endpoint is not sent, at any depth of a tool schema.
 ///
-/// Gemini declares functions with an OpenAPI subset of JSON Schema, and that
-/// subset has no `additionalProperties`. Here it only restates what the Dart
-/// validators already enforce, so dropping it loses nothing — the same
-/// stance the app takes towards provider-side strictness everywhere.
-Map<String, Object?> withoutAdditionalProperties(Map<String, Object?> schema) =>
+/// - `additionalProperties`: Gemini declares functions with an OpenAPI subset
+///   of JSON Schema, and that subset has none.
+/// - `maxItems`: with `tool_choice: "required"`, the photo schema's
+///   `maxItems: 20` on a dish's ingredients makes Google answer 400 "Request
+///   contains an invalid argument." for every photo; without it, 200 and a
+///   tool call (measured on the app's own request, one key changed at a time:
+///   ont-testdata `gemini_isolate.yml`, 30 Oct 2026). Every limit is dropped,
+///   not only that one, so the next schema change cannot bring it back.
+///
+/// Both only restate what the Dart validators already enforce
+/// (`mealPhotoEstimateFromJson` takes the same limits), so dropping them loses
+/// nothing — the same stance the app takes towards provider-side strictness
+/// everywhere.
+const geminiDroppedSchemaKeys = {'additionalProperties', 'maxItems'};
+
+/// [schema] without [geminiDroppedSchemaKeys], at every depth.
+Map<String, Object?> geminiSchema(Map<String, Object?> schema) =>
     _strip(schema) as Map<String, Object?>;
 
 Object? _strip(Object? node) => switch (node) {
   Map() => {
     for (final entry in node.entries)
-      if (entry.key != 'additionalProperties')
+      if (!geminiDroppedSchemaKeys.contains(entry.key))
         entry.key as String: _strip(entry.value),
   },
   List() => [for (final item in node) _strip(item)],

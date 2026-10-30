@@ -79,12 +79,15 @@ void main() {
     });
   });
 
-  group('withoutAdditionalProperties', () {
-    test('removes the key at every depth and nothing else', () {
-      final stripped = withoutAdditionalProperties(mealPhotoToolSchema);
+  group('geminiSchema', () {
+    test('removes the dropped keys at every depth and nothing else', () {
+      final stripped = geminiSchema(mealPhotoToolSchema);
 
-      expect(_hasKey(mealPhotoToolSchema, 'additionalProperties'), isTrue);
-      expect(_hasKey(stripped, 'additionalProperties'), isFalse);
+      for (final key in geminiDroppedSchemaKeys) {
+        expect(_hasKey(mealPhotoToolSchema, key), isTrue, reason: key);
+        expect(_hasKey(stripped, key), isFalse, reason: key);
+      }
+      expect(_hasKey(stripped, 'minItems'), isTrue);
       expect(stripped['required'], mealPhotoToolSchema['required']);
       final dishes = (stripped['properties'] as Map)['dishes'] as Map;
       final dish = dishes['items'] as Map;
@@ -102,12 +105,12 @@ void main() {
     });
 
     test('leaves the shared constants untouched', () {
-      withoutAdditionalProperties(mealItemsToolSchema);
+      geminiSchema(mealItemsToolSchema);
       expect(mealItemsToolSchema['additionalProperties'], isFalse);
     });
 
     test('the items schema keeps its enum and required list', () {
-      final stripped = withoutAdditionalProperties(mealItemsToolSchema);
+      final stripped = geminiSchema(mealItemsToolSchema);
       final item =
           ((stripped['properties'] as Map)['items'] as Map)['items'] as Map;
       expect(item['required'], ['query']);
@@ -160,6 +163,9 @@ void main() {
       );
 
       expect(_hasKey(client.sent!['tools'], 'additionalProperties'), isFalse);
+      // maxItems with a forced tool call is what Google refused with a 400.
+      expect(client.sent!['tool_choice'], 'required');
+      expect(_hasKey(client.sent!['tools'], 'maxItems'), isFalse);
       expect(
         client.sent!['max_tokens'],
         mealPhotoToolSpec.maxTokens + geminiThinkingAllowance,
