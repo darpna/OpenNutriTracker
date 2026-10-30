@@ -61,8 +61,10 @@ const saltMaxG = 2.0;
 ///     kcal/100 g is more than [tableKcalGateRatio] from the model's — then
 ///     the best row that is not ([GenericFoodTable.match] `accept`);
 ///  3. otherwise the **[cache]**: the numbers this device settled on for a
-///     food of that name the first time it saw one;
-///  4. otherwise the checked model numbers, which are then remembered.
+///     food of that name, unless they are the model's and have expired
+///     ([CachedFoodNumbers.isExpiredAt]) and this reply has numbers of its own;
+///  4. otherwise the checked model numbers, which are then remembered (and
+///     replace an expired entry).
 ///
 /// Then per dish:
 ///  5. a weight the caption states wins, for an ingredient or a dish;
@@ -79,8 +81,9 @@ PhotoMealEstimate finalizeEstimate(
   GenericFoodTable? table,
   FoodNumberCache? cache,
   String? caption,
+  DateTime? now,
 }) {
-  final numbers = _Numbers(table, cache);
+  final numbers = _Numbers(table, cache, now ?? DateTime.now());
   var dishes = [
     for (final dish in raw.dishes)
       _Dish(
@@ -178,9 +181,10 @@ class _Dish {
 class _Numbers {
   final GenericFoodTable? table;
   final FoodNumberCache? cache;
+  final DateTime now;
   final _settled = <String, CachedFoodNumbers>{};
 
-  _Numbers(this.table, this.cache);
+  _Numbers(this.table, this.cache, this.now);
 
   _Ingredient? resolve(RawIngredient raw) {
     final stated = raw.per100g;
@@ -209,6 +213,7 @@ class _Numbers {
           per100g,
           fromTable: true,
           matchedName: food.description,
+          checkedAt: now,
         ),
       );
       return _Ingredient(
@@ -221,7 +226,9 @@ class _Numbers {
     }
 
     final known = _settled[key] ?? cache?.read(key);
-    if (known != null) {
+    // An expired model value is still better than dropping an ingredient that
+    // came with no numbers of its own; otherwise this reply's numbers win.
+    if (known != null && (model == null || !known.isExpiredAt(now))) {
       _settled[key] = known;
       return _Ingredient(
         raw,
@@ -236,7 +243,7 @@ class _Numbers {
     // row, nothing remembered. Dropped, as an ingredient with no numbers
     // always was.
     if (model == null) return null;
-    _remember(key, CachedFoodNumbers(model));
+    _remember(key, CachedFoodNumbers(model, checkedAt: now));
     return _Ingredient(
       raw,
       per100g: model,
